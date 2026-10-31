@@ -1,53 +1,35 @@
-# WorkflowKaizen Hub
+# PWA Starter
 
-SCADA & Industrial Automation Continuous Improvement, SOP Compliance & Kaizen Board. A local-first PWA built with vanilla ES modules, CSS custom properties and IndexedDB. No runtime dependencies, no network calls, no cloud.
+[**Straight to Full Documentation**](https://docs.pwabuilder.com/#/starter/quick-start)
 
-## Architecture
+The PWABuilder pwa-starter is our opinionated, best practices, production tested starter that we use to build all of our PWAs, including [PWABuilder itself](https://blog.pwabuilder.com/posts/introducing-the-brand-new-pwa-builder/)! The pwa-starter is a starter codebase, just like create-react-app or the Angular CLI can generate, that uses the PWABuilder team's preferred front-end tech stack. We also have a CLI tool to allow you to create a PWA template from the command line.
 
-| File | Role |
-|---|---|
-| `index.html` | App shell, tab nav, modal `<dialog>`, toast region |
-| `css/tokens.css` | Design tokens, dark (default) and light themes, AA-contrast palette |
-| `css/layout.css` | Grid, safe-area insets, Window Controls Overlay, 320px to 4K breakpoints |
-| `css/components.css` | Cards, Kanban, progress rings, badges, modals, buttons (44px targets) |
-| `js/db.js` | IndexedDB wrapper. DB `workflow-kaizen-hub` v2, stores `sops`, `kaizens`, `runs`, `meta`, with indexes and an idempotent upgrade path |
-| `js/seed-data.js` | Five SCADA/automation SOPs, six Kaizens, six audit runs |
-| `js/pwa-installer.js` | Install prompt, update banner (`SKIP_WAITING`), `storage.persist()`, quota and capacity estimate |
-| `js/app.js` | State, hash router, views, SOP check-off engine, PDCA board, import/export |
-| `sw.js` | Precache + cache-first static, network-first navigations, `offline.html` fallback, sync placeholder |
+## Jump Right In
 
-### Data model
-- **SOP**: `id, code, title, category, rev, owner, summary, steps[{text, detail}], updated`
-- **Run**: `id, sopId, engineer, ts, total, pass, fail, na, score, results[{step, result, ts}], note`. Score = pass / (pass + fail); N/A is excluded.
-- **Kaizen**: `id, title, stage(Plan|Do|Check|Act), priority, waste, owner, problem, whys[5], countermeasure, minutesSaved, incidentReduction, created, updated`
+Install the PWABuilder CLI:
 
-### Retention
-Records are tiny (about 1 to 4 KB). Browser quotas are typically hundreds of MB or more, so 2 to 3 years of data is far below quota. The Data & Storage tab requests persistent storage, shows usage and a capacity estimate, and offers JSON backup/restore and CSV reports. Schedule a monthly JSON export as the offline archive.
+`npm i -g @pwabuilder/cli`
 
-## Run / deploy
-Service workers need HTTPS or `localhost`.
-```
-cd workflow-kaizen-hub
-python3 -m http.server 8080      # then open http://localhost:8080
-```
-For production, serve the folder over HTTPS from any static host or an internal IIS/nginx. To release an update, bump `VERSION` in `sw.js`; users see an "Update now" banner.
+And create a new app with this command:
 
-## Test matrix
-| Area | Check | Expected |
-|---|---|---|
-| Install | Chrome/Edge desktop, Android Chrome | Install button appears; launches standalone |
-| iOS | Safari Share > Add to Home Screen | Uses `apple-touch-icon.png`; safe areas respected |
-| Offline | Load once, enable airplane mode, reload | App and data load; unknown routes show `offline.html` |
-| SOP run | Start, mark steps, save | Timestamps per step; run in history; dashboard adherence updates |
-| Kaizen | New, move with arrows, edit 5-Whys, delete | Persists after reload |
-| Storage | Export JSON, erase, import | Data restored; merge vs replace honoured |
-| CSV | Export both reports | Opens in Excel; cells starting with `=+-@` are neutralised |
-| Themes | Toggle dark/light | Text contrast at least 4.5:1 |
-| Responsive | 320px, 768px, 1440px, 4K | No horizontal scroll; board 1/2/4 columns |
-| WCO | Installed desktop PWA | Title bar draggable; buttons not draggable |
-| A11y | Keyboard only, screen reader | Visible focus, labelled controls, dialog trap |
-| Update | Change `VERSION`, reload twice | Update banner then reload |
+`pwa create`
 
-## Notes
-- Background sync in `sw.js` is a placeholder; the app is local-first.
-- Browsers may evict non-persistent storage under pressure; grant persistence and keep exports.
+And start your app locally with:
+
+`pwa start`
+
+And that's it! Good luck on your Progressive Web App adventure!
+
+## More Info
+
+[![Get started with the pwa-starter!](https://img.youtube.com/vi/u3pWKpmic_k/0.jpg)](https://www.youtube.com/watch?v=u3pWKpmic_k)
+
+With it you get an app that:
+- Has no build system to set up and no boilerplate code to add. Everything is included out of the box.
+- Has a Service Worker system using [Workbox](https://developers.google.com/web/tools/workbox/)
+- Scores close to 100 on Lighthouse out of the box
+- Has everything needed to be installable in the browser
+- Is ready to be package for the app stores using [PWABuilder](https://www.pwabuilder.com)
+- Uses the [Azure Static Web Apps CLI](https://azure.github.io/static-web-apps-cli) which enables emulating your production environment locally, and gets you ready for deploying to Azure Static Web Apps!
+
+and all with just a few button clicks 😊.
