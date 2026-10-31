@@ -1,0 +1,31 @@
+{
+  "id": "/workflow-kaizen-hub/",
+  "name": "WorkflowKaizen Hub",
+  "short_name": "Kaizen Hub",
+  "description": "SCADA & Industrial Automation Continuous Improvement, SOP Compliance & Kaizen Board",
+  "start_url": "./index.html#/dashboard",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "categories": ["productivity", "business", "utilities"],
+  "icons": [
+    {"src": "icons/icon-72.png", "sizes": "72x72", "type": "image/png"},
+    {"src": "icons/icon-96.png", "sizes": "96x96", "type": "image/png"},
+    {"src": "icons/icon-128.png", "sizes": "128x128", "type": "image/png"},
+    {"src": "icons/icon-144.png", "sizes": "144x144", "type": "image/png"},
+    {"src": "icons/icon-152.png", "sizes": "152x152", "type": "image/png"},
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-384.png", "sizes": "384x384", "type": "image/png"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+    {"src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "SOP Tracker", "short_name": "SOPs", "url": "./index.html#/sops", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]},
+    {"name": "Kaizen Board", "short_name": "Kaizen", "url": "./index.html#/kaizen", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]},
+    {"name": "Data & Storage", "short_name": "Storage", "url": "./index.html#/storage", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]}
+  ]
+}

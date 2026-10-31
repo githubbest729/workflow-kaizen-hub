@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WorkflowKaizen Hub</title>
+<meta name="description" content="SCADA &amp; Industrial Automation Continuous Improvement, SOP Compliance &amp; Kaizen Board">
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+<header class="titlebar" role="banner">
+  <div class="brand">
+    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="3"/><path d="M10 17l4 4 8-9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div><h1>WorkflowKaizen Hub</h1><p class="sub">SCADA &amp; Industrial Automation CI, SOP Compliance &amp; Kaizen Board</p></div>
+  </div>
+  <div class="actions">
+    <button class="btn ghost" id="installBtn" hidden>Install</button>
+    <button class="btn ghost icon" id="themeBtn" aria-label="Toggle light or dark theme" title="Toggle theme">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+<div id="banner" class="banner" role="status" hidden></div>
+<nav class="tabs" role="tablist" aria-label="Main sections">
+  <a role="tab" href="#/dashboard" data-tab="dashboard">Dashboard</a>
+  <a role="tab" href="#/sops" data-tab="sops">SOP Tracker</a>
+  <a role="tab" href="#/kaizen" data-tab="kaizen">Kaizen Board</a>
+  <a role="tab" href="#/storage" data-tab="storage">Data &amp; Storage</a>
+</nav>
+<main id="view" class="view" tabindex="-1" aria-live="polite"></main>
+<dialog id="modal" class="modal" aria-labelledby="modalTitle"></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<noscript><p style="padding:1rem">JavaScript is required to run WorkflowKaizen Hub.</p></noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
