@@ -26,6 +26,7 @@
   "shortcuts": [
     {"name": "SOP Tracker", "short_name": "SOPs", "url": "./index.html#/sops", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]},
     {"name": "Kaizen Board", "short_name": "Kaizen", "url": "./index.html#/kaizen", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]},
+    {"name": "Audit Trail", "short_name": "Audit", "url": "./index.html#/audit", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]},
     {"name": "Data & Storage", "short_name": "Storage", "url": "./index.html#/storage", "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]}
   ]
 }

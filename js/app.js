@@ -1,196 +1,365 @@
 import { DB } from './db.js';
-import { seedAll } from './seed-data.js';
-import { initPWA, storageInfo, requestPersist } from './pwa-installer.js';
+import { seedAll, SOPS, KAIZENS } from './seed-data.js';
+import { initPWA, storageInfo, requestPersist, flushNow, snapshotUsage, fmt } from './pwa-installer.js';
 
 const STAGES = ['Plan', 'Do', 'Check', 'Act'];
 const STAGE_HINT = { Plan: 'Identify bottleneck / waste', Do: 'Implement countermeasure', Check: 'Measure SCADA metric', Act: 'Standardise & update SOP' };
 const PRIOS = ['Critical', 'High', 'Medium', 'Low'];
 const WASTES = ['Defects', 'Waiting', 'Motion', 'Overprocessing'];
-const st = { sops: [], kaizens: [], runs: [], q: '', prio: 'all' };
+const TABS = ['dashboard', 'sops', 'kaizen', 'audit', 'storage'];
+
 const $ = (s, r = document) => r.querySelector(s);
 const view = $('#view'), modal = $('#modal');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const uid = p => p + '-' + (crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
-const fdt = iso => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const fdt = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '--';
+const scoreCls = n => n >= 90 ? 'ok' : n >= 70 ? 'warn' : 'bad';
+const sopOf = id => st.sops.find(s => s.id === id);
+const svg = p => `<svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const ICON = {
+  doc: svg('<path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 13h6M9 17h6"/>'),
+  board: svg('<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="6" rx="1"/>'),
+  search: svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'),
+  log: svg('<path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/>')
+};
+const empty = (icon, title, text, actions = '') => `<div class="empty" role="status">${icon}<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="row center">${actions}</div></div>`;
+
+const st = {
+  sops: [], kaizens: [], last: {}, stats: { count: 0, scored: 0, sum: 0, failed: 0 }, recent: [],
+  q: '', prio: 'all',
+  audit: { initials: '', status: 'all', sopId: 'all', items: [], offset: 0, done: false, total: null, ms: 0, dirty: true, events: [] }
+};
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2800);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 3000);
 }
 
+/* ---------------- data loading ---------------- */
 async function load() {
-  [st.sops, st.kaizens, st.runs] = await Promise.all([DB.all('sops'), DB.all('kaizens'), DB.all('runs')]);
-  st.runs.sort((a, b) => b.ts.localeCompare(a.ts));
+  st.sops = await DB.all('sops'); st.sops.sort((a, b) => a.code.localeCompare(b.code));
+  st.kaizens = await DB.all('kaizens');
+  st.stats = await DB.runStats();
+  const lasts = await Promise.all(st.sops.map(s => DB.lastBySop(s.id)));
+  st.last = {}; st.sops.forEach((s, i) => { st.last[s.id] = lasts[i]; });
+  st.recent = (await DB.page('runs', { index: 'ts', limit: 7 })).items;
+  st.audit.dirty = true;
 }
 
 async function ensureSeed() {
   if (await DB.getMeta('seeded')) return;
   if ((await DB.totals()).total === 0) {
     const s = seedAll();
-    await DB.putMany('sops', s.sops); await DB.putMany('kaizens', s.kaizens); await DB.putMany('runs', s.runs);
+    await DB.commit({ puts: { sops: s.sops, kaizens: s.kaizens, runs: s.runs }, audit: [{ action: 'seed', detail: 'Sample SCADA data loaded', actor: 'system' }] });
   }
   await DB.setMeta('seeded', true);
 }
 
-/* ---------- derived metrics ---------- */
 function metrics() {
-  const scored = st.runs.filter(r => r.total - r.na > 0);
-  const adherence = scored.length ? Math.round(scored.reduce((a, r) => a + r.score, 0) / scored.length) : null;
-  const active = st.kaizens.filter(k => k.stage !== 'Act').length;
+  const s = st.stats;
   const proven = st.kaizens.filter(k => k.stage === 'Check' || k.stage === 'Act');
-  const mins = proven.reduce((a, k) => a + (+k.minutesSaved || 0), 0);
   const withInc = proven.filter(k => +k.incidentReduction > 0);
-  const inc = withInc.length ? Math.round(withInc.reduce((a, k) => a + +k.incidentReduction, 0) / withInc.length) : 0;
-  return { adherence, active, mins, inc };
+  return {
+    adherence: s.scored ? Math.round(s.sum / s.scored) : null,
+    active: st.kaizens.filter(k => k.stage !== 'Act').length,
+    mins: proven.reduce((a, k) => a + (+k.minutesSaved || 0), 0),
+    inc: withInc.length ? Math.round(withInc.reduce((a, k) => a + +k.incidentReduction, 0) / withInc.length) : 0
+  };
 }
-const ring = p => `<div class="ring" style="--p:${p ?? 0};--c:${p == null ? 'var(--border)' : p >= 90 ? 'var(--ok)' : p >= 70 ? 'var(--warn)' : 'var(--bad)'}" role="img" aria-label="${p == null ? 'No runs' : p + ' percent adherence'}"><span>${p == null ? '--' : p + '%'}</span></div>`;
-const lastRun = id => st.runs.find(r => r.sopId === id);
+const ring = p => `<div class="ring" style="--p:${p ?? 0};--c:${p == null ? 'var(--border-strong)' : p >= 90 ? 'var(--ok)' : p >= 70 ? 'var(--warn)' : 'var(--bad)'}" role="img" aria-label="${p == null ? 'No runs yet' : p + ' percent adherence'}"><span>${p == null ? '--' : p + '%'}</span></div>`;
 
-/* ---------- views ---------- */
+/* ---------------- skeletons ---------------- */
+const skelCard = '<div class="card" aria-hidden="true"><div class="skeleton line w40"></div><div class="skeleton big"></div><div class="skeleton line"></div><div class="skeleton line w60"></div><div class="skeleton block"></div></div>';
+const skeleton = tab => tab === 'dashboard'
+  ? `<div class="grid kpis">${skelCard.repeat(5)}</div><div class="grid cols-2" style="margin-top:var(--space-4)">${skelCard.repeat(2)}</div>`
+  : `<div class="grid cards">${skelCard.repeat(6)}</div>`;
+
+/* ---------------- views ---------------- */
 function vDashboard() {
   const m = metrics();
-  const hrs = (m.mins / 60).toFixed(1);
-  const wasteCount = WASTES.map(w => [w, st.kaizens.filter(k => k.waste === w).length]);
-  const max = Math.max(1, ...wasteCount.map(w => w[1]));
-  const stageCount = STAGES.map(s => [s, st.kaizens.filter(k => k.stage === s).length]);
+  const wc = WASTES.map(w => [w, st.kaizens.filter(k => k.waste === w).length]);
+  const max = Math.max(1, ...wc.map(x => x[1]));
+  const sc = STAGES.map(s => [s, st.kaizens.filter(k => k.stage === s).length]);
   return `
   <section class="grid kpis" aria-label="Key metrics">
-    <article class="card kpi"><div class="label">SOP Adherence Rate</div><div class="value ${m.adherence == null ? '' : m.adherence >= 90 ? 'ok' : m.adherence >= 70 ? 'warn' : 'bad'}">${m.adherence == null ? '--' : m.adherence + '%'}</div><div class="hint">Average across ${st.runs.length} audit runs</div></article>
-    <article class="card kpi"><div class="label">Active Kaizens</div><div class="value">${m.active}</div><div class="hint">Not yet standardised (Plan/Do/Check)</div></article>
-    <article class="card kpi"><div class="label">Cycle Time Saved</div><div class="value">${hrs}<small> h</small></div><div class="hint">Verified in Check or Act stages</div></article>
-    <article class="card kpi"><div class="label">Incident Reduction</div><div class="value ok">${m.inc}%</div><div class="hint">Mean across verified improvements</div></article>
+    <article class="card kpi"><div class="label">SOP Adherence Rate</div><div class="value ${m.adherence == null ? '' : scoreCls(m.adherence)}">${m.adherence == null ? '--' : m.adherence + '%'}</div><div class="hint">Average across ${st.stats.count} audit runs</div></article>
+    <article class="card kpi"><div class="label">Audit Runs</div><div class="value">${st.stats.count}</div><div class="hint">${st.stats.failed} with at least one failed step</div></article>
+    <article class="card kpi"><div class="label">Active Kaizens</div><div class="value">${m.active}</div><div class="hint">Not yet standardised</div></article>
+    <article class="card kpi"><div class="label">Cycle Time Saved</div><div class="value">${(m.mins / 60).toFixed(1)}<small> h</small></div><div class="hint">Verified in Check or Act</div></article>
+    <article class="card kpi"><div class="label">Incident Reduction</div><div class="value ok">${m.inc}%</div><div class="hint">Mean of verified improvements</div></article>
   </section>
   <section class="grid cols-2" style="margin-top:var(--space-4)">
     <article class="card"><h2>Lean waste distribution</h2>
-      ${wasteCount.map(([w, n]) => `<div class="bar-row"><span>${w}</span><div class="bar"><i style="width:${n / max * 100}%"></i></div><b>${n}</b></div>`).join('')}
+      ${wc.map(([w, n]) => `<div class="bar-row"><span>${w}</span><div class="bar"><i style="width:${n / max * 100}%"></i></div><b>${n}</b></div>`).join('')}
       <h2 style="margin-top:var(--space-4)">PDCA pipeline</h2>
-      ${stageCount.map(([s, n]) => `<div class="bar-row"><span>${s}</span><div class="bar"><i style="width:${n / Math.max(1, st.kaizens.length) * 100}%"></i></div><b>${n}</b></div>`).join('')}
+      ${sc.map(([s, n]) => `<div class="bar-row"><span>${s}</span><div class="bar"><i style="width:${n / Math.max(1, st.kaizens.length) * 100}%"></i></div><b>${n}</b></div>`).join('')}
     </article>
     <article class="card"><h2>Recent SOP audit runs</h2>
-      ${st.runs.length ? `<ul class="list">${st.runs.slice(0, 7).map(r => { const s = st.sops.find(x => x.id === r.sopId); return `<li><span>${esc(s ? s.title : r.sopId)}<br><span class="muted">${esc(r.engineer)} · ${fdt(r.ts)}</span></span><b class="${r.score >= 90 ? 'ok' : r.score >= 70 ? 'warn' : 'bad'}">${r.score}%</b></li>`; }).join('')}</ul>` : '<p class="muted">No runs recorded yet. Open the SOP Tracker to start one.</p>'}
+      ${st.recent.length ? `<ul class="list">${st.recent.map(r => { const s = sopOf(r.sopId); return `<li><button data-detail="${esc(r.id)}"><span>${esc(s ? s.title : r.sopId)}<br><span class="muted">${esc(r.initials)} · ${fdt(r.ts)}</span></span><b class="${scoreCls(r.score)}">${r.score}%</b></button></li>`; }).join('')}</ul>`
+        : empty(ICON.log, 'No audit runs yet', 'Open the SOP Tracker and complete a check-off to see adherence data here.', '<a class="btn" href="#/sops">Go to SOP Tracker</a>')}
     </article>
   </section>`;
 }
 
 function vSops() {
+  const bar = `<div class="toolbar"><input class="grow" id="q" type="search" placeholder="Search SOPs by title, code or category" value="${esc(st.q)}" aria-label="Search SOPs"><button class="btn" data-act="newsop">+ New SOP</button></div>`;
+  if (!st.sops.length) return empty(ICON.doc, 'No SOPs yet', 'Create your first Standard Operating Procedure, or load the sample SCADA library to try the check-off workflow.',
+    '<button class="btn" data-act="newsop">New SOP</button><button class="btn ghost" data-act="samplesops">Load sample SOPs</button>');
   const q = st.q.toLowerCase();
   const list = st.sops.filter(s => !q || (s.title + s.code + s.category + s.summary).toLowerCase().includes(q));
-  return `
-  <div class="toolbar"><input class="grow" id="q" type="search" placeholder="Search SOPs by title, code or category" value="${esc(st.q)}" aria-label="Search SOPs"></div>
-  <section class="grid cards">${list.map(s => {
-    const lr = lastRun(s.id);
+  return bar + (list.length ? `<section class="grid cards">${list.map(s => {
+    const lr = st.last[s.id];
     return `<article class="card sop-card">
       <div class="sop-head"><div><span class="badge waste">${esc(s.category)}</span><h3 style="margin-top:var(--space-2)">${esc(s.title)}</h3><p class="muted">${esc(s.code)} · Rev ${esc(s.rev)} · ${s.steps.length} steps</p></div>${ring(lr ? lr.score : null)}</div>
       <p class="muted">${esc(s.summary)}</p>
-      <p class="muted">${lr ? 'Last run ' + fdt(lr.ts) + ' by ' + esc(lr.engineer) : 'Never executed'}</p>
-      <div class="row"><button class="btn" data-run="${s.id}">Start check-off</button><button class="btn ghost" data-hist="${s.id}">History</button></div>
+      <p class="muted">${lr ? 'Last run ' + fdt(lr.ts) + ' by ' + esc(lr.initials) : 'Never executed'}</p>
+      <div class="row"><button class="btn" data-run="${esc(s.id)}">Start check-off</button><button class="btn ghost" data-hist="${esc(s.id)}">History</button></div>
     </article>`;
-  }).join('') || '<p class="muted">No SOPs match your search.</p>'}</section>`;
+  }).join('')}</section>` : empty(ICON.search, 'No matches', `Nothing matches "${st.q}".`, '<button class="btn ghost" data-act="clearq">Clear search</button>'));
 }
 
 function vKaizen() {
+  if (!st.kaizens.length) return empty(ICON.board, 'Your Kaizen board is empty', 'Capture the first field deviation or improvement idea. It starts in Plan and moves through Do, Check and Act.',
+    '<button class="btn" data-act="newkz">Log first Kaizen</button><button class="btn ghost" data-act="samplekz">Load sample Kaizens</button>');
   const q = st.q.toLowerCase();
   const list = st.kaizens.filter(k => (st.prio === 'all' || k.priority === st.prio) && (!q || (k.title + k.problem + k.owner + k.waste).toLowerCase().includes(q)));
   return `
   <div class="toolbar">
     <input class="grow" id="q" type="search" placeholder="Search Kaizens" value="${esc(st.q)}" aria-label="Search Kaizens">
     <select id="prio" aria-label="Filter by priority" style="width:auto"><option value="all">All priorities</option>${PRIOS.map(p => `<option ${st.prio === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
-    <button class="btn" id="newKz">+ New Kaizen</button>
+    <button class="btn" data-act="newkz">+ New Kaizen</button>
   </div>
   <section class="board">${STAGES.map((s, i) => {
     const items = list.filter(k => k.stage === s);
     return `<div class="col" data-stage="${s}" role="region" aria-label="${s} column"><header><h2>${s}</h2><small>${STAGE_HINT[s]} · ${items.length}</small></header>
-    ${items.map(k => `<article class="k-card"><button class="title" data-open="${k.id}">${esc(k.title)}</button>
+    ${items.map(k => `<article class="k-card"><button class="title" data-open="${esc(k.id)}">${esc(k.title)}</button>
       <div class="badges"><span class="badge ${k.priority}">${k.priority}</span><span class="badge waste">${esc(k.waste)}</span></div>
       <p class="muted">${esc(k.owner)}${+k.minutesSaved ? ' · saves ' + k.minutesSaved + ' min' : ''}</p>
-      <div class="move"><button class="btn ghost small" data-mv="${k.id}" data-d="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move to ${STAGES[i - 1] || ''}">&larr; ${STAGES[i - 1] || ''}</button><button class="btn ghost small" data-mv="${k.id}" data-d="1" ${i === 3 ? 'disabled' : ''} aria-label="Move to ${STAGES[i + 1] || ''}">${STAGES[i + 1] || ''} &rarr;</button></div></article>`).join('') || '<p class="muted">Empty</p>'}</div>`;
+      <div class="move"><button class="btn ghost small" data-mv="${esc(k.id)}" data-d="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move back to ${STAGES[i - 1] || ''}">&larr; ${STAGES[i - 1] || ''}</button><button class="btn ghost small" data-mv="${esc(k.id)}" data-d="1" ${i === 3 ? 'disabled' : ''} aria-label="Move forward to ${STAGES[i + 1] || ''}">${STAGES[i + 1] || ''} &rarr;</button></div></article>`).join('') || '<p class="muted">Nothing here. Move a card in, or add a new Kaizen.</p>'}</div>`;
   }).join('')}</section>`;
 }
 
+/* audit trail: indexed, paged queries */
+function auditPlan() {
+  const f = st.audit; let index = 'ts', range = null; const b = v => DB.range(v, '');
+  if (f.initials) { index = 'initials_ts'; range = b(f.initials); }
+  else if (f.status !== 'all') { index = 'status_ts'; range = b(f.status); }
+  else if (f.sopId !== 'all') { index = 'sop_ts'; range = b(f.sopId); }
+  const n = (f.initials ? 1 : 0) + (f.status !== 'all' ? 1 : 0) + (f.sopId !== 'all' ? 1 : 0);
+  const filter = n > 1 ? r => (!f.initials || r.initials === f.initials) && (f.status === 'all' || r.status === f.status) && (f.sopId === 'all' || r.sopId === f.sopId) : null;
+  return { index, range, filter, n };
+}
+async function auditMore(reset) {
+  const f = st.audit, t0 = performance.now();
+  if (reset) { f.items = []; f.offset = 0; f.done = false; }
+  const p = auditPlan();
+  const r = await DB.page('runs', { index: p.index, range: p.range, dir: 'prev', offset: f.offset, limit: 25, filter: p.filter });
+  f.items.push(...r.items); f.offset += r.items.length; f.done = r.done || r.items.length < 25;
+  if (reset) f.total = p.n <= 1 ? await DB.countIndex('runs', p.index, p.range) : null;
+  f.ms = Math.round(performance.now() - t0);
+}
+async function vAudit() {
+  const f = st.audit;
+  if (f.dirty) { await auditMore(true); f.events = (await DB.page('audit', { index: 'ts', limit: 12 })).items; f.dirty = false; }
+  const rows = f.items.map(r => { const s = sopOf(r.sopId); const photos = (r.results || []).filter(x => x && x.p).length;
+    return `<li><button data-detail="${esc(r.id)}"><span>${esc(s ? s.code : r.sopId)} · ${esc(r.initials)}<br><span class="muted">${fdt(r.ts)}${photos ? ' · ' + photos + ' photo' + (photos > 1 ? 's' : '') : ''}</span></span><span><span class="badge ${r.status}">${r.status}</span> <b class="${scoreCls(r.score)}">${r.score}%</b></span></button></li>`; }).join('');
+  return `
+  <section class="card" aria-label="Run filters">
+    <div class="filters">
+      <div><label for="fInit">Engineer initials</label><input id="fInit" maxlength="5" value="${esc(f.initials)}" placeholder="e.g. AR" autocomplete="off" style="text-transform:uppercase"></div>
+      <div><label for="fStatus">Status</label><select id="fStatus">${['all', 'Passed', 'Failed'].map(v => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${v === 'all' ? 'All' : v}</option>`).join('')}</select></div>
+      <div><label for="fSop">SOP</label><select id="fSop"><option value="all">All SOPs</option>${st.sops.map(s => `<option value="${esc(s.id)}" ${f.sopId === s.id ? 'selected' : ''}>${esc(s.code)}</option>`).join('')}</select></div>
+    </div>
+    <p class="muted" aria-live="polite">${f.total != null ? f.total + ' matching runs' : f.items.length + ' loaded'} · indexed query ${f.ms} ms</p>
+    ${rows ? `<ul class="list">${rows}</ul>` : empty(ICON.log, 'No runs match', 'Adjust the filters, or complete a SOP check-off to create an audit record.', '<button class="btn ghost" data-act="clearaudit">Reset filters</button><a class="btn" href="#/sops">Open SOP Tracker</a>')}
+    ${f.done ? '' : '<div class="row center" style="margin-top:var(--space-3)"><button class="btn ghost" data-act="auditmore">Load more</button></div>'}
+  </section>
+  <section class="card" style="margin-top:var(--space-4)"><h2>System audit trail</h2>
+    ${f.events.length ? `<ul class="list">${f.events.map(e => `<li><span>${esc(e.action)}<br><span class="muted">${esc(e.detail)}${e.actor ? ' · ' + esc(e.actor) : ''}</span></span><span class="muted">${fdt(e.ts)}</span></li>`).join('')}</ul>` : '<p class="muted">No events recorded yet.</p>'}
+  </section>`;
+}
+
 async function vStorage() {
-  const i = await storageInfo(), t = await DB.totals();
+  const [i, t, oc, ep] = await Promise.all([storageInfo(), DB.totals(), DB.outboxCounts(), DB.getMeta('syncEndpoint')]);
   return `
   <section class="grid cols-2">
     <article class="card"><h2>Local storage telemetry</h2>
-      ${i.supported ? `<div class="bar meter" role="progressbar" aria-valuenow="${i.pct.toFixed(2)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.max(i.pct, 1)}%"></i></div>
+      ${i.supported ? `<div class="bar meter" role="progressbar" aria-label="Storage used" aria-valuenow="${i.pct.toFixed(2)}" aria-valuemin="0" aria-valuemax="100"><i class="${i.warn ? 'bad' : ''}" style="width:${Math.max(i.pct, 1)}%"></i></div>
       <ul class="list" style="margin-top:var(--space-3)">
-        <li><span>Used</span><b>${i.fmt(i.usage)}</b></li><li><span>Quota</span><b>${i.fmt(i.quota)}</b></li>
+        <li><span>Used / quota</span><b>${fmt(i.usage)} / ${fmt(i.quota)}</b></li>
         <li><span>Persistent storage</span><b class="${i.persisted ? 'ok' : 'warn'}">${i.persisted ? 'Granted' : 'Not granted'}</b></li>
-        <li><span>Records (SOPs / Kaizens / Runs)</span><b>${t.sops} / ${t.kaizens} / ${t.runs}</b></li>
-        <li><span>Estimated capacity remaining</span><b>${i.years >= 99 ? '99+' : i.years.toFixed(1)} years</b></li></ul>
-      <p class="muted" style="margin-top:var(--space-2)">Capacity assumes about 1,500 new records per year at the current average record size.</p>
-      ${i.persisted ? '' : '<button class="btn" id="persist" style="margin-top:var(--space-3)">Request persistent storage</button>'}`
+        <li><span>SOPs / Kaizens / Runs</span><b>${t.sops} / ${t.kaizens} / ${t.runs}</b></li>
+        <li><span>Evidence photos / Audit events</span><b>${t.evidence} / ${t.audit}</b></li>
+        <li><span>Forecast growth</span><b>${fmt(i.perYear)} per year</b></li>
+        <li><span>Capacity remaining</span><b class="${i.enough ? 'ok' : 'bad'}">${i.years >= 99 ? '99+' : i.years.toFixed(1)} years</b></li></ul>
+      <p class="muted" style="margin-top:var(--space-2)">Basis: ${esc(i.basis)}. ${i.enough ? 'Comfortably covers 3 years of retention.' : 'Below 3 years. Export a backup and clear old data.'}${i.warn ? ' Quota is above 80%.' : ''}</p>
+      ${i.persisted ? '' : '<button class="btn" data-act="persist" style="margin-top:var(--space-3)">Request persistent storage</button>'}`
       : '<p class="muted">Storage estimates are not supported by this browser.</p>'}
     </article>
     <article class="card"><h2>Backup, restore &amp; reports</h2>
-      <p class="muted">Data never leaves this device. Export a backup to transfer it to another workstation or keep a long-term archive.</p>
+      <p class="muted">Data stays on this device. Export a backup to move it to another workstation or to keep a long-term archive.</p>
       <div class="row" style="margin-top:var(--space-3)">
-        <button class="btn" id="expJson">Export full backup (JSON)</button>
-        <button class="btn ghost" id="impJson">Import backup (JSON)</button>
-        <button class="btn ghost" id="expSop">SOP audits (CSV)</button>
+        <button class="btn" id="expJson">Full backup (JSON)</button>
+        <button class="btn ghost" id="impJson">Import backup</button>
+        <button class="btn ghost" id="expSop">SOP audit (CSV)</button>
         <button class="btn ghost" id="expKz">Kaizen review (CSV)</button>
       </div>
-      <input type="file" id="file" accept="application/json,.json" hidden>
-      <label><input type="checkbox" id="replace" style="width:auto;min-height:0"> Replace existing data on import (otherwise merge)</label>
+      <input type="file" id="file" accept="application/json,.json" class="vh" tabindex="-1" aria-hidden="true">
+      <label style="display:flex;gap:var(--space-2);align-items:center"><input type="checkbox" id="replace"> Replace existing data on import (otherwise merge)</label>
+    </article>
+    <article class="card"><h2>Offline sync queue</h2>
+      <p class="muted">Every SOP run and Kaizen change is queued in an IndexedDB outbox and delivered by Background Sync when the device reconnects. Set an HTTPS endpoint that accepts JSON POSTs (CORS enabled).</p>
+      <ul class="list" style="margin-top:var(--space-2)"><li><span>Pending</span><b>${oc.pending}</b></li><li><span>Rejected by server</span><b class="${oc.rejected ? 'bad' : ''}">${oc.rejected}</b></li></ul>
+      <label for="ep">Sync endpoint URL</label><input id="ep" type="url" inputmode="url" placeholder="https://example.org/api/kaizen-sync" value="${esc(ep || '')}">
+      <div class="row" style="margin-top:var(--space-3)"><button class="btn" data-act="saveep">Save endpoint</button><button class="btn ghost" data-act="syncnow">Sync now</button>${oc.rejected ? '<button class="btn ghost" data-act="requeue">Retry rejected</button>' : ''}</div>
+    </article>
+    <article class="card"><h2>Scale test &amp; maintenance</h2>
+      <p class="muted">Generate 3,000 synthetic audit runs spread over 3 years to confirm the indexed queries stay fast.</p>
+      <div class="row" style="margin-top:var(--space-3)"><button class="btn ghost" data-act="stress">Generate 3,000 test runs</button><button class="btn ghost" data-act="unstress">Remove test runs</button></div>
+      <p class="muted" id="stressMsg" aria-live="polite" style="margin-top:var(--space-2)"></p>
       <hr style="border:0;border-top:1px solid var(--border);margin:var(--space-4) 0">
-      <button class="btn danger" id="reset">Erase all data</button>
+      <div class="row"><button class="btn ghost" data-act="tour">Replay guided tour</button><button class="btn danger" data-act="reset">Erase all data</button></div>
     </article>
   </section>`;
 }
 
-/* ---------- modals ---------- */
+/* ---------------- modals ---------------- */
 function openModal(title, body, footer) {
+  modal.onchange = null; modal.oninput = null; modal.onclick = null;
   modal.innerHTML = `<div class="mh"><h2 id="modalTitle">${esc(title)}</h2><button class="btn ghost icon" data-close aria-label="Close">&times;</button></div><div class="mb">${body}</div><div class="mf">${footer}</div>`;
   if (!modal.open) modal.showModal();
 }
 modal.addEventListener('click', e => { if (e.target.closest('[data-close]') || e.target === modal) modal.close(); });
 
+async function toDataUrl(file, max = 800, q = 0.72) {
+  const img = 'createImageBitmap' in window ? await createImageBitmap(file)
+    : await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+  const w = img.width || img.naturalWidth, h = img.height || img.naturalHeight, k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', q);
+}
+
 function runModal(sop) {
-  const steps = sop.steps.map((s, i) => `<fieldset class="step" id="st${i}" style="margin-inline:0"><legend class="muted">Step ${i + 1}</legend><p>${esc(s.text)}</p>${s.detail ? `<p class="muted">${esc(s.detail)}</p>` : ''}
+  const steps = sop.steps.map((s, i) => `<fieldset class="step" id="st${i}"><legend class="muted">Step ${i + 1} of ${sop.steps.length}</legend><p class="t">${esc(s.text)}</p>${s.detail ? `<p class="muted">${esc(s.detail)}</p>` : ''}
     <div class="seg" role="radiogroup" aria-label="Result for step ${i + 1}">
       <label><input type="radio" name="r${i}" value="pass"><span class="p">Pass</span></label>
       <label><input type="radio" name="r${i}" value="fail"><span class="f">Fail</span></label>
       <label><input type="radio" name="r${i}" value="na"><span class="n">N/A</span></label></div>
-    <div class="stamp" id="ts${i}">Not recorded</div></fieldset>`).join('');
+    <div class="stamp" id="ts${i}">Not recorded</div>
+    <details class="evd"><summary>Field evidence (note and photo)</summary>
+      <label for="n${i}">Note</label><textarea id="n${i}" rows="2" data-note="${i}" placeholder="Readings, tag numbers, observations"></textarea>
+      <div class="row" style="margin-top:var(--space-2)"><label class="btn ghost small filebtn" style="margin:0">Attach photo<input type="file" class="vh" accept="image/*" capture="environment" data-photo="${i}"></label><button type="button" class="btn ghost small" data-rmphoto="${i}" hidden>Remove photo</button></div>
+      <img class="evi" id="pv${i}" alt="Evidence preview for step ${i + 1}" hidden></details></fieldset>`).join('');
   openModal(sop.title, `<p class="muted">${esc(sop.code)} · Rev ${esc(sop.rev)}</p>
     <label for="eng">Engineer initials</label><input id="eng" maxlength="5" autocomplete="off" placeholder="e.g. AR" style="text-transform:uppercase">${steps}
     <label for="note">Deviation / remarks</label><textarea id="note" placeholder="Record any field deviation to raise as a Kaizen"></textarea>
     <p class="muted" id="live" style="margin-top:var(--space-3)" aria-live="polite">Adherence: --</p>`,
     '<button class="btn ghost" data-close>Cancel</button><button class="btn" id="saveRun">Save audit run</button>');
-  const times = {};
+  const times = {}, ev = {};
   const calc = () => {
     let p = 0, f = 0, n = 0;
     sop.steps.forEach((_, i) => { const v = $(`input[name=r${i}]:checked`, modal); if (!v) return; v.value === 'pass' ? p++ : v.value === 'fail' ? f++ : n++; });
-    const den = p + f;
-    $('#live', modal).textContent = `Adherence: ${den ? Math.round(p / den * 100) + '%' : '--'} (${p} pass, ${f} fail, ${n} N/A, ${sop.steps.length - p - f - n} pending)`;
-    return { p, f, n, den };
+    $('#live', modal).textContent = `Adherence: ${p + f ? Math.round(p / (p + f) * 100) + '%' : '--'} (${p} pass, ${f} fail, ${n} N/A, ${sop.steps.length - p - f - n} pending)`;
+    return { p, f, n };
   };
-  modal.onchange = e => {
-    const m = /^r(\d+)$/.exec(e.target.name || ''); if (!m) return;
-    const i = +m[1]; times[i] = new Date().toISOString();
-    $('#ts' + i, modal).textContent = 'Recorded ' + fdt(times[i]);
-    $('#st' + i, modal).className = 'step ' + (e.target.value === 'pass' ? 'pass' : e.target.value === 'fail' ? 'fail' : '');
-    calc();
+  modal.onchange = async e => {
+    const el = e.target;
+    const m = /^r(\d+)$/.exec(el.name || '');
+    if (m) {
+      const i = +m[1]; times[i] = new Date().toISOString();
+      $('#ts' + i, modal).textContent = 'Recorded ' + fdt(times[i]);
+      $('#st' + i, modal).className = 'step ' + (el.value === 'pass' ? 'pass' : el.value === 'fail' ? 'fail' : '');
+      calc(); return;
+    }
+    if (el.dataset.photo !== undefined && el.files[0]) {
+      const i = +el.dataset.photo;
+      try {
+        const dataUrl = await toDataUrl(el.files[0]);
+        ev[i] = Object.assign(ev[i] || {}, { dataUrl, name: el.files[0].name || 'photo.jpg', size: Math.round(dataUrl.length * 0.75) });
+        const pv = $('#pv' + i, modal); pv.src = dataUrl; pv.hidden = false;
+        $(`[data-rmphoto="${i}"]`, modal).hidden = false;
+      } catch (_) { toast('Could not read that image'); }
+    }
+  };
+  modal.oninput = e => { if (e.target.dataset.note !== undefined) { const i = +e.target.dataset.note; ev[i] = Object.assign(ev[i] || {}, { note: e.target.value }); } };
+  modal.onclick = e => {
+    const b = e.target.closest('[data-rmphoto]'); if (!b) return;
+    const i = +b.dataset.rmphoto; if (ev[i]) { delete ev[i].dataUrl; } $('#pv' + i, modal).hidden = true; b.hidden = true;
   };
   $('#saveRun', modal).onclick = async () => {
-    const eng = $('#eng', modal).value.trim().toUpperCase();
-    if (!eng) { toast('Enter engineer initials'); $('#eng', modal).focus(); return; }
+    const ini = $('#eng', modal).value.trim().toUpperCase();
+    if (!ini) { toast('Enter engineer initials'); $('#eng', modal).focus(); return; }
     const c = calc();
     if (c.p + c.f + c.n < sop.steps.length) { toast('Complete every step before saving'); return; }
-    const results = sop.steps.map((s, i) => ({ step: s.text, result: $(`input[name=r${i}]:checked`, modal).value, ts: times[i] }));
-    await DB.put('runs', { id: uid('run'), sopId: sop.id, engineer: eng, ts: new Date().toISOString(), total: sop.steps.length, pass: c.p, fail: c.f, na: c.n, score: c.den ? Math.round(c.p / c.den * 100) : 100, results, note: $('#note', modal).value.trim() });
-    modal.close(); await load(); render(); toast('Audit run saved');
+    const runId = DB.uid(), evidence = [];
+    const results = sop.steps.map((s, i) => {
+      const e = ev[i] || {}, entry = { r: $(`input[name=r${i}]:checked`, modal).value, t: times[i], n: (e.note || '').trim(), p: null };
+      if (e.dataUrl) { entry.p = DB.uid(); evidence.push({ id: entry.p, runId, sopId: sop.id, stepIndex: i, ts: times[i], name: e.name, type: 'image/jpeg', size: e.size, dataUrl: e.dataUrl }); }
+      return entry;
+    });
+    const run = { id: runId, sopId: sop.id, sopRev: sop.rev, initials: ini, ts: new Date().toISOString(), total: sop.steps.length, pass: c.p, fail: c.f, na: c.n,
+      score: c.p + c.f ? Math.round(c.p / (c.p + c.f) * 100) : 100, status: c.f > 0 ? 'Failed' : 'Passed', results, note: $('#note', modal).value.trim() };
+    try {
+      await DB.commit({ puts: { runs: [run], evidence }, outbox: [{ type: 'sop-run', payload: { run, evidence } }], audit: [{ action: 'run.saved', ref: run.id, detail: `${sop.code} ${run.score}% ${run.status}`, actor: ini }] });
+    } catch (err) { toast('Save failed: ' + err.message); return; }
+    modal.close(); await load(); await render(); toast('Audit run saved');
+    if (c.f > 0 && confirm('Failed steps were recorded. Raise a Kaizen from this deviation?')) {
+      const bad = results.map((x, i) => x.r === 'fail' ? `Step ${i + 1}: ${sop.steps[i].text}${x.n ? ' (' + x.n + ')' : ''}` : '').filter(Boolean).join('\n');
+      kzModal(null, { title: 'Deviation on ' + sop.code, problem: bad + (run.note ? '\n' + run.note : ''), waste: 'Defects', priority: 'High', owner: ini });
+    }
   };
 }
 
-function histModal(sop) {
-  const runs = st.runs.filter(r => r.sopId === sop.id);
-  openModal('History: ' + sop.title, runs.length ? `<ul class="list">${runs.map(r => `<li><span>${fdt(r.ts)} · ${esc(r.engineer)}<br><span class="muted">${r.pass} pass, ${r.fail} fail, ${r.na} N/A${r.note ? ' · ' + esc(r.note) : ''}</span></span><b class="${r.score >= 90 ? 'ok' : r.score >= 70 ? 'warn' : 'bad'}">${r.score}%</b></li>`).join('')}</ul>` : '<p class="muted">No runs yet.</p>', '<button class="btn ghost" data-close>Close</button>');
+async function histModal(sop) {
+  const range = DB.range(sop.id, ''); let offset = 0;
+  const total = await DB.countIndex('runs', 'sop_ts', range);
+  const li = r => `<li><button data-detail="${esc(r.id)}"><span>${fdt(r.ts)} · ${esc(r.initials)}<br><span class="muted">${r.pass} pass, ${r.fail} fail, ${r.na} N/A${r.note ? ' · ' + esc(r.note) : ''}</span></span><b class="${scoreCls(r.score)}">${r.score}%</b></button></li>`;
+  const first = await DB.page('runs', { index: 'sop_ts', range, limit: 20 }); offset = first.items.length;
+  openModal('History: ' + sop.title, `<p class="muted">${total} recorded runs</p><ul class="list" id="hl">${first.items.map(li).join('') || '<li><span class="muted">No runs yet. Start a check-off from the SOP card.</span></li>'}</ul>${total > offset ? '<div class="row center" style="margin-top:var(--space-3)"><button class="btn ghost" id="hmore">Load more</button></div>' : ''}`, '<button class="btn ghost" data-close>Close</button>');
+  const more = $('#hmore', modal);
+  if (more) more.onclick = async () => {
+    const r = await DB.page('runs', { index: 'sop_ts', range, limit: 20, offset });
+    $('#hl', modal).insertAdjacentHTML('beforeend', r.items.map(li).join('')); offset += r.items.length;
+    if (offset >= total || !r.items.length) more.remove();
+  };
 }
 
-function kzModal(k) {
+async function runDetail(id) {
+  const r = await DB.get('runs', id); if (!r) return;
+  const sop = sopOf(r.sopId), evs = await DB.evidenceFor(id), byId = Object.fromEntries(evs.map(e => [e.id, e]));
+  const label = { pass: 'Pass', fail: 'Fail', na: 'N/A' };
+  openModal(sop ? sop.title : r.sopId, `<p class="muted">${esc(sop ? sop.code : '')} Rev ${esc(r.sopRev || '')} · ${fdt(r.ts)} · Initials ${esc(r.initials)}</p>
+    <p style="margin-top:var(--space-2)"><span class="badge ${r.status}">${r.status}</span> <b class="${scoreCls(r.score)}">${r.score}%</b> <span class="muted">${r.pass} pass, ${r.fail} fail, ${r.na} N/A</span></p>
+    ${(r.results || []).map((x, i) => `<div class="step ${x.r === 'pass' ? 'pass' : x.r === 'fail' ? 'fail' : ''}"><p class="t">${i + 1}. ${esc(sop && sop.steps[i] ? sop.steps[i].text : 'Step ' + (i + 1))}</p>
+      <p><b class="${x.r === 'pass' ? 'ok' : x.r === 'fail' ? 'bad' : ''}">${label[x.r] || x.r}</b> <span class="stamp">${fdt(x.t)}</span></p>
+      ${x.n ? `<p class="muted">Note: ${esc(x.n)}</p>` : ''}${x.p && byId[x.p] ? `<img class="evi" src="${esc(byId[x.p].dataUrl)}" alt="Evidence photo for step ${i + 1}">` : ''}</div>`).join('')}
+    ${r.note ? `<p class="muted" style="margin-top:var(--space-3)">Remarks: ${esc(r.note)}</p>` : ''}`, '<button class="btn ghost" data-close>Close</button>');
+}
+
+function sopModal() {
+  openModal('New SOP', `
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 var(--space-3)">
+      <div><label for="sc">Code</label><input id="sc" placeholder="SOP-XXX-001"></div>
+      <div><label for="sr">Revision</label><input id="sr" value="A"></div>
+      <div><label for="sg">Category</label><input id="sg" placeholder="Field Instrumentation"></div>
+      <div><label for="so">Owner</label><input id="so"></div></div>
+    <label for="stt">Title</label><input id="stt">
+    <label for="ssm">Summary</label><textarea id="ssm"></textarea>
+    <label for="sst">Steps (one per line)</label><textarea id="sst" rows="6" placeholder="Isolate the instrument&#10;Record as-found values"></textarea>`,
+    '<button class="btn ghost" data-close>Cancel</button><button class="btn" id="ssave">Save SOP</button>');
+  $('#ssave', modal).onclick = async () => {
+    const title = $('#stt', modal).value.trim(), steps = $('#sst', modal).value.split('\n').map(x => x.trim()).filter(Boolean);
+    if (!title || !steps.length) { toast('Title and at least one step are required'); return; }
+    const sop = { id: DB.uid(), code: $('#sc', modal).value.trim() || 'SOP-NEW', title, category: $('#sg', modal).value.trim() || 'General', rev: $('#sr', modal).value.trim() || 'A', owner: $('#so', modal).value.trim(),
+      summary: $('#ssm', modal).value.trim(), steps: steps.map(t => ({ text: t, detail: '' })), updated: new Date().toISOString() };
+    await DB.commit({ puts: { sops: [sop] }, outbox: [{ type: 'sop-upsert', payload: sop }], audit: [{ action: 'sop.created', ref: sop.id, detail: sop.code }] });
+    modal.close(); await load(); await render(); toast('SOP created');
+  };
+}
+
+function kzModal(k, prefill) {
   const isNew = !k;
-  k = k || { id: uid('kz'), title: '', stage: 'Plan', priority: 'Medium', waste: 'Waiting', owner: '', problem: '', whys: ['', '', '', '', ''], countermeasure: '', minutesSaved: 0, incidentReduction: 0, created: new Date().toISOString() };
+  k = k || Object.assign({ id: DB.uid(), title: '', stage: 'Plan', priority: 'Medium', waste: 'Waiting', owner: '', problem: '', whys: ['', '', '', '', ''], countermeasure: '', minutesSaved: 0, incidentReduction: 0, created: new Date().toISOString() }, prefill || {});
   const opt = (arr, v) => arr.map(a => `<option ${a === v ? 'selected' : ''}>${a}</option>`).join('');
   openModal(isNew ? 'New Kaizen' : 'Kaizen detail', `
     <label for="kt">Title</label><input id="kt" value="${esc(k.title)}">
@@ -209,93 +378,187 @@ function kzModal(k) {
   $('#ksave', modal).onclick = async () => {
     const title = $('#kt', modal).value.trim();
     if (!title) { toast('Title is required'); $('#kt', modal).focus(); return; }
-    await DB.put('kaizens', { ...k, title, stage: $('#ks', modal).value, priority: $('#kp', modal).value, waste: $('#kw', modal).value, owner: $('#ko', modal).value.trim(),
+    const nk = { ...k, title, stage: $('#ks', modal).value, priority: $('#kp', modal).value, waste: $('#kw', modal).value, owner: $('#ko', modal).value.trim(),
       problem: $('#kpr', modal).value.trim(), whys: [...modal.querySelectorAll('.why')].map(i => i.value.trim()), countermeasure: $('#kc', modal).value.trim(),
-      minutesSaved: Math.max(0, +$('#km', modal).value || 0), incidentReduction: Math.min(100, Math.max(0, +$('#ki', modal).value || 0)), updated: new Date().toISOString() });
-    modal.close(); await load(); render(); toast('Kaizen saved');
+      minutesSaved: Math.max(0, +$('#km', modal).value || 0), incidentReduction: Math.min(100, Math.max(0, +$('#ki', modal).value || 0)), updated: new Date().toISOString() };
+    await DB.commit({ puts: { kaizens: [nk] }, outbox: [{ type: 'kaizen-upsert', payload: nk }], audit: [{ action: isNew ? 'kaizen.created' : 'kaizen.updated', ref: nk.id, detail: nk.title + ' [' + nk.stage + ']', actor: nk.owner }] });
+    modal.close(); await load(); await render(); toast('Kaizen saved');
   };
   const del = $('#kdel', modal);
-  if (del) del.onclick = async () => { if (confirm('Delete this Kaizen permanently?')) { await DB.del('kaizens', k.id); modal.close(); await load(); render(); toast('Deleted'); } };
+  if (del) del.onclick = async () => {
+    if (!confirm('Delete this Kaizen permanently?')) return;
+    await DB.commit({ dels: { kaizens: [k.id] }, outbox: [{ type: 'kaizen-delete', payload: { id: k.id } }], audit: [{ action: 'kaizen.deleted', ref: k.id, detail: k.title }] });
+    modal.close(); await load(); await render(); toast('Deleted');
+  };
 }
 
-/* ---------- export helpers ---------- */
+/* ---------------- export helpers ---------------- */
 function download(name, text, type) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type }));
-  a.download = name; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }
-const csv = rows => rows.map(r => r.map(c => { let s = String(c ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\r\n');
+const csv = rows => rows.map(r => r.map(c => { let s = String(c ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\r\n');
 const stamp = () => new Date().toISOString().slice(0, 10);
 
+/* ---------------- storage tab actions ---------------- */
 function bindStorage() {
-  const p = $('#persist'); if (p) p.onclick = async () => { toast((await requestPersist()) ? 'Persistent storage granted' : 'Browser declined persistence'); render(); };
-  $('#expJson').onclick = async () => { download(`workflow-kaizen-backup-${stamp()}.json`, JSON.stringify(await DB.exportAll(), null, 2), 'application/json'); toast('Backup exported'); };
+  $('#expJson').onclick = async () => {
+    download(`workflow-kaizen-backup-${stamp()}.json`, JSON.stringify(await DB.exportAll()), 'application/json');
+    await DB.commit({ audit: [{ action: 'export.json', detail: 'Full backup exported' }] }); toast('Backup exported');
+  };
   $('#impJson').onclick = () => $('#file').click();
   $('#file').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
-    try { const n = await DB.importAll(JSON.parse(await f.text()), { merge: !$('#replace').checked }); await load(); render(); toast(`Imported ${n} records`); }
-    catch (err) { toast('Import failed: ' + err.message); }
+    try {
+      const n = await DB.importAll(JSON.parse(await f.text()), { merge: !$('#replace').checked });
+      await DB.commit({ audit: [{ action: 'import.json', detail: n + ' records from ' + f.name }] });
+      await load(); await render(); toast(`Imported ${n} records`);
+    } catch (err) { toast('Import failed: ' + err.message); }
+    e.target.value = '';
   };
-  $('#expSop').onclick = () => {
-    const rows = [['Run ID', 'SOP Code', 'SOP Title', 'Engineer', 'Timestamp', 'Pass', 'Fail', 'N/A', 'Adherence %', 'Remarks']];
-    st.runs.forEach(r => { const s = st.sops.find(x => x.id === r.sopId) || {}; rows.push([r.id, s.code, s.title, r.engineer, r.ts, r.pass, r.fail, r.na, r.score, r.note]); });
-    download(`sop-audits-${stamp()}.csv`, csv(rows), 'text/csv');
+  $('#expSop').onclick = async () => {
+    const runs = await DB.all('runs'); runs.sort((a, b) => a.ts < b.ts ? -1 : 1);
+    const evs = await DB.all('evidence'); const hasPhoto = new Set(evs.map(e => e.id));
+    const rows = [['Run ID', 'Run Timestamp', 'SOP Code', 'SOP Title', 'SOP Rev', 'Initials', 'Status', 'Adherence %', 'Step #', 'Step', 'Result', 'Step Timestamp', 'Evidence Note', 'Photo Attached', 'Run Remarks']];
+    runs.forEach(r => { const s = sopOf(r.sopId) || {};
+      (r.results && r.results.length ? r.results : [null]).forEach((x, i) => rows.push([r.id, r.ts, s.code, s.title, r.sopRev, r.initials, r.status, r.score, x ? i + 1 : '', x && s.steps && s.steps[i] ? s.steps[i].text : '', x ? x.r : '', x ? x.t : '', x ? x.n : '', x && x.p && hasPhoto.has(x.p) ? 'Yes' : 'No', i === 0 ? r.note : ''])); });
+    download(`sop-audit-${stamp()}.csv`, '\ufeff' + csv(rows), 'text/csv'); await DB.commit({ audit: [{ action: 'export.csv', detail: 'SOP audit CSV, ' + runs.length + ' runs' }] }); toast('SOP audit CSV exported');
   };
   $('#expKz').onclick = () => {
     const rows = [['ID', 'Title', 'Stage', 'Priority', 'Waste', 'Owner', 'Problem', 'Why 1', 'Why 2', 'Why 3', 'Why 4', 'Why 5', 'Countermeasure', 'Minutes Saved', 'Incident Reduction %', 'Created', 'Updated']];
     st.kaizens.forEach(k => rows.push([k.id, k.title, k.stage, k.priority, k.waste, k.owner, k.problem, ...k.whys, k.countermeasure, k.minutesSaved, k.incidentReduction, k.created, k.updated]));
-    download(`kaizen-review-${stamp()}.csv`, csv(rows), 'text/csv');
-  };
-  $('#reset').onclick = async () => {
-    if (!confirm('Erase ALL SOPs, Kaizens and audit runs from this device? Export a backup first.')) return;
-    for (const s of ['sops', 'kaizens', 'runs']) await DB.clear(s);
-    await DB.setMeta('seeded', true); await load(); render(); toast('All data erased');
+    download(`kaizen-review-${stamp()}.csv`, '\ufeff' + csv(rows), 'text/csv'); toast('Kaizen CSV exported');
   };
 }
 
-/* ---------- router / render ---------- */
-let renderId = 0;
+/* ---------------- guided tour ---------------- */
+const TOUR = [
+  { tab: 'dashboard', sel: '.kpis', t: 'Live KPIs', x: 'SOP adherence, active Kaizens, cycle time saved and incident reduction update as you record work.' },
+  { tab: 'sops', sel: '.sop-card, .empty', t: 'SOP check-offs', x: 'Start a check-off, mark each step Pass, Fail or N/A, and attach a note or photo as field evidence. Each step is timestamped.' },
+  { tab: 'kaizen', sel: '.board, .empty', t: 'PDCA Kaizen board', x: 'Move improvements through Plan, Do, Check and Act. Open a card for the 5-Whys and measurable impact.' },
+  { tab: 'audit', sel: '.filters', t: 'Audit trail', x: 'Filter every run by initials, status or SOP. Indexed queries keep 3,000+ records fast.' },
+  { tab: 'storage', sel: '#expJson', t: 'Your data, your device', x: 'Back up to JSON, export CSV audits, and watch storage forecasts. Offline changes queue for Background Sync.' }
+];
+let tourEl = null;
+function endTour() { if (tourEl) tourEl.classList.remove('tour-hl'); tourEl = null; $('#tour').hidden = true; DB.setMeta('tourDone', true); }
+async function go(tab) {
+  if (currentTab() !== tab) { location.hash = '#/' + tab; await new Promise(r => addEventListener('hashchange', r, { once: true })); }
+  await renderP;
+}
+async function startTour(i = 0) {
+  if (i >= TOUR.length) { endTour(); toast('Tour complete. Replay it any time from the ? button.'); return; }
+  const s = TOUR[i]; await go(s.tab);
+  if (tourEl) tourEl.classList.remove('tour-hl');
+  tourEl = $(s.sel); if (tourEl) { tourEl.classList.add('tour-hl'); tourEl.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }
+  const t = $('#tour'); t.hidden = false;
+  t.innerHTML = `<div class="dots">Step ${i + 1} of ${TOUR.length}</div><h2>${esc(s.t)}</h2><p class="muted">${esc(s.x)}</p>
+    <div class="row"><button class="btn ghost" data-tour="skip">Skip</button><span class="row"><button class="btn ghost" data-tour="back" ${i === 0 ? 'disabled' : ''}>Back</button><button class="btn" data-tour="next">${i === TOUR.length - 1 ? 'Finish' : 'Next'}</button></span></div>`;
+  t.onclick = e => { const b = e.target.closest('[data-tour]'); if (!b) return; b.dataset.tour === 'skip' ? endTour() : startTour(i + (b.dataset.tour === 'back' ? -1 : 1)); };
+  $('[data-tour=next]', t).focus();
+}
+addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#tour').hidden && !modal.open) endTour(); });
+
+/* ---------------- router, render, events ---------------- */
+const currentTab = () => { const t = (location.hash.match(/^#\/(\w+)/) || [])[1]; return TABS.includes(t) ? t : 'dashboard'; };
+let lastTab = null, renderId = 0, renderP = Promise.resolve();
+
 async function render() {
-  const id = ++renderId;
-  const tab = (location.hash.match(/^#\/(\w+)/) || [])[1] || 'dashboard';
-  document.querySelectorAll('.tabs a').forEach(a => a.setAttribute('aria-selected', a.dataset.tab === tab));
-  const html = tab === 'sops' ? vSops() : tab === 'kaizen' ? vKaizen() : tab === 'storage' ? await vStorage() : vDashboard();
+  const id = ++renderId, tab = currentTab();
+  document.querySelectorAll('.tabs a').forEach(a => a.setAttribute('aria-selected', String(a.dataset.tab === tab)));
+  if (tab !== lastTab) { view.setAttribute('aria-busy', 'true'); view.innerHTML = skeleton(tab); if (tab === 'audit') st.audit.dirty = true; }
+  lastTab = tab;
+  let html;
+  try { html = tab === 'sops' ? vSops() : tab === 'kaizen' ? vKaizen() : tab === 'audit' ? await vAudit() : tab === 'storage' ? await vStorage() : vDashboard(); }
+  catch (err) { html = `<div class="card"><h2>Something went wrong</h2><p class="muted">${esc(err.message)}</p></div>`; }
   if (id !== renderId) return;
-  view.innerHTML = html;
-  const q = $('#q');
-  if (q) q.oninput = e => { st.q = e.target.value; const pos = e.target.selectionStart; render().then(() => { const n = $('#q'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }); };
+  view.innerHTML = html; view.removeAttribute('aria-busy');
+  const q = $('#q'); if (q) q.oninput = e => keepFocus('q', () => { st.q = e.target.value; });
+  if (tab === 'audit') {
+    const f = st.audit;
+    $('#fInit').oninput = e => { clearTimeout(f.t); f.t = setTimeout(() => keepFocus('fInit', () => { f.initials = e.target.value.trim().toUpperCase(); f.dirty = true; }), 250); };
+    $('#fStatus').onchange = e => { f.status = e.target.value; f.dirty = true; render(); };
+    $('#fSop').onchange = e => { f.sopId = e.target.value; f.dirty = true; render(); };
+  }
   if (tab === 'storage') bindStorage();
+}
+function keepFocus(id, mutate) {
+  const el = $('#' + id), pos = el ? el.selectionStart : 0; mutate();
+  return render().then(() => { const n = $('#' + id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (_) {} } });
+}
+
+async function updateChip() {
+  const chip = $('#netChip'), c = await DB.outboxCounts(), on = navigator.onLine;
+  chip.textContent = (on ? 'Online' : 'Offline') + (c.pending ? ` · ${c.pending} queued` : '');
+  chip.dataset.state = !on ? 'offline' : c.pending ? 'queued' : 'online';
+}
+function onOutbox(m) {
+  if (m.sent > 0) toast(`Synced ${m.sent} queued item${m.sent > 1 ? 's' : ''}`);
+  updateChip(); if (currentTab() === 'storage') render();
 }
 
 view.addEventListener('click', async e => {
-  const t = e.target.closest('button'); if (!t) return;
-  if (t.dataset.run) runModal(st.sops.find(s => s.id === t.dataset.run));
-  else if (t.dataset.hist) histModal(st.sops.find(s => s.id === t.dataset.hist));
-  else if (t.dataset.open) kzModal(st.kaizens.find(k => k.id === t.dataset.open));
-  else if (t.id === 'newKz') kzModal(null);
-  else if (t.dataset.mv) {
-    const k = st.kaizens.find(x => x.id === t.dataset.mv); const i = STAGES.indexOf(k.stage) + +t.dataset.d;
-    if (i < 0 || i > 3) return;
-    k.stage = STAGES[i]; k.updated = new Date().toISOString(); await DB.put('kaizens', k); render(); toast(`Moved to ${k.stage}`);
+  const b = e.target.closest('button'); if (!b) return;
+  const d = b.dataset;
+  if (d.run) return runModal(sopOf(d.run));
+  if (d.hist) return histModal(sopOf(d.hist));
+  if (d.detail) return runDetail(d.detail);
+  if (d.open) return kzModal(st.kaizens.find(k => k.id === d.open));
+  if (d.mv) {
+    const k = st.kaizens.find(x => x.id === d.mv), i = STAGES.indexOf(k.stage) + +d.d; if (i < 0 || i > 3) return;
+    const nk = { ...k, stage: STAGES[i], updated: new Date().toISOString() };
+    await DB.commit({ puts: { kaizens: [nk] }, outbox: [{ type: 'kaizen-upsert', payload: nk }], audit: [{ action: 'kaizen.moved', ref: k.id, detail: `${k.title}: ${k.stage} to ${nk.stage}`, actor: k.owner }] });
+    await load(); await render(); return toast('Moved to ' + nk.stage);
+  }
+  switch (d.act) {
+    case 'newsop': return sopModal();
+    case 'newkz': return kzModal(null);
+    case 'clearq': st.q = ''; return render();
+    case 'clearaudit': Object.assign(st.audit, { initials: '', status: 'all', sopId: 'all', dirty: true }); return render();
+    case 'auditmore': await auditMore(false); return render();
+    case 'samplesops': await DB.commit({ puts: { sops: SOPS.map(s => ({ ...s, updated: new Date().toISOString() })) }, audit: [{ action: 'sample.sops' }] }); await load(); await render(); return toast('Sample SOPs loaded');
+    case 'samplekz': await DB.commit({ puts: { kaizens: KAIZENS }, audit: [{ action: 'sample.kaizens' }] }); await load(); await render(); return toast('Sample Kaizens loaded');
+    case 'persist': toast((await requestPersist()) ? 'Persistent storage granted' : 'The browser declined persistence. Installing the app or bookmarking it can help.'); return render();
+    case 'saveep': {
+      const v = $('#ep').value.trim();
+      if (v && !/^https?:\/\//i.test(v)) return toast('Endpoint must start with http:// or https://');
+      await DB.setMeta('syncEndpoint', v); await DB.commit({ audit: [{ action: 'sync.endpoint', detail: v || '(cleared)' }] });
+      toast(v ? 'Endpoint saved' : 'Endpoint cleared'); if (v && navigator.onLine) flushNow(); return;
+    }
+    case 'syncnow': if (!(await DB.getMeta('syncEndpoint'))) return toast('Set a sync endpoint first'); if (!navigator.onLine) return toast('Offline. Items sync automatically when reconnected.'); await flushNow(); return toast('Sync requested');
+    case 'requeue': toast(`${await DB.requeueRejected()} items re-queued`); await flushNow(); return render();
+    case 'stress': {
+      b.disabled = true; const msg = $('#stressMsg'), t0 = performance.now();
+      try { await DB.generateStress(3000, (n, tot) => { msg.textContent = `Writing ${n} / ${tot}`; }); } finally { b.disabled = false; }
+      const t1 = performance.now(); await load(); await auditMore(true);
+      msg.textContent = `3,000 runs written in ${Math.round(t1 - t0)} ms. Indexed first-page query: ${st.audit.ms} ms.`; st.audit.dirty = true; return toast('Test runs generated');
+    }
+    case 'unstress': { const n = await DB.deleteStress(); await load(); await render(); return toast(`${n} test runs removed`); }
+    case 'tour': return startTour(0);
+    case 'reset':
+      if (!confirm('Erase ALL SOPs, Kaizens, evidence and audit runs from this device? Export a backup first.')) return;
+      await DB.eraseAll(); await DB.setMeta('seeded', true); await load(); await render(); updateChip(); return toast('All data erased');
   }
 });
 view.addEventListener('change', e => { if (e.target.id === 'prio') { st.prio = e.target.value; render(); } });
 
-/* ---------- theme & boot ---------- */
 function setTheme(t) {
   document.documentElement.dataset.theme = t;
   document.querySelector('meta[name=theme-color]').content = t === 'dark' ? '#0b1220' : '#f3f6fb';
   try { localStorage.setItem('wkh-theme', t); } catch (_) {}
 }
 $('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-let saved = null; try { saved = localStorage.getItem('wkh-theme'); } catch (_) {}
-setTheme(saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
-window.addEventListener('hashchange', () => { st.q = ''; render(); view.focus(); });
+$('#tourBtn').onclick = () => startTour(0);
+let savedTheme = null; try { savedTheme = localStorage.getItem('wkh-theme'); } catch (_) {}
+setTheme(savedTheme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+addEventListener('hashchange', () => { st.q = ''; renderP = render(); view.focus(); });
 
 (async function boot() {
-  initPWA({ onToast: toast });
+  initPWA({ onToast: toast, onOutbox, onNet: updateChip });
+  view.innerHTML = skeleton('dashboard');
   try { await ensureSeed(); await load(); }
   catch (err) { view.innerHTML = `<div class="card"><h2>Storage unavailable</h2><p class="muted">IndexedDB failed to open: ${esc(err.message)}. Private browsing may block local storage.</p></div>`; return; }
-  render();
+  renderP = render(); await renderP; updateChip();
+  snapshotUsage().then(async () => { const i = await storageInfo(); if (i.warn) toast('Storage is above 80% of quota. Export a backup.'); }).catch(() => {});
+  if (!(await DB.getMeta('tourDone'))) setTimeout(() => startTour(0), 700);
 })();
