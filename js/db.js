@@ -1,5 +1,7 @@
 const NAME = 'workflow-kaizen-hub';
-const VERSION = 3;
+const VERSION = 4;
+// Run status from adherence score: 100% Passed, 75-99% Deviation, below 75% Failed.
+const statusOf = score => score >= 100 ? 'Passed' : score >= 75 ? 'Deviation' : 'Failed';
 const rng = (a, b) => IDBKeyRange.bound([a, ''], [a, '\uffff']);
 const STORES = {
   sops:     { keyPath: 'id', indexes: [['category', 'category'], ['code', 'code'], ['updated', 'updated']] },
@@ -29,7 +31,7 @@ function open() {
       }
       const runs = t.objectStore('runs');
       if (runs.indexNames.contains('engineer')) runs.deleteIndex('engineer');
-      if (e.oldVersion > 0 && e.oldVersion < 3) {
+      if (e.oldVersion > 0 && e.oldVersion < 4) {
         const c = runs.openCursor();
         c.onsuccess = () => {
           const cur = c.result; if (!cur) return;
@@ -50,7 +52,8 @@ function open() {
 
 function migrateRun(v) {
   if (v.initials === undefined) { v.initials = v.engineer || '--'; delete v.engineer; }
-  if (!v.status) v.status = (v.fail || 0) > 0 ? 'Failed' : 'Passed';
+  if (typeof v.score !== 'number') { const p = v.pass || 0, f = v.fail || 0; v.score = p + f ? Math.round(p / (p + f) * 100) : 100; }
+  v.status = statusOf(v.score);
   if (Array.isArray(v.results)) v.results = v.results.map(x => (x && x.result !== undefined) ? { r: x.result, t: x.ts || v.ts, n: '', p: null } : x);
   return v;
 }
@@ -62,7 +65,7 @@ const mkAudit = a => ({ id: uid(), ts: new Date().toISOString(), action: a.actio
 
 export const DB = {
   hooks: {},
-  open, uid, range: rng,
+  open, uid, range: rng, statusOf,
 
   async all(store) { const db = await open(); return req(db.transaction(store).objectStore(store).getAll()); },
   async get(store, key) { const db = await open(); return req(db.transaction(store).objectStore(store).get(key)); },
@@ -118,7 +121,7 @@ export const DB = {
   async runStats() {
     const db = await open(), now = Date.now();
     return new Promise((resolve, reject) => {
-      const out = { count: 0, scored: 0, sum: 0, failed: 0, cur: { n: 0, s: 0, sum: 0 }, prev: { n: 0, s: 0, sum: 0 }, daily: Array.from({ length: 14 }, () => ({ n: 0, s: 0, sum: 0 })) };
+      const out = { count: 0, scored: 0, sum: 0, failed: 0, stale: 0, cur: { n: 0, s: 0, sum: 0 }, prev: { n: 0, s: 0, sum: 0 }, daily: Array.from({ length: 14 }, () => ({ n: 0, s: 0, sum: 0 })) };
       const r = db.transaction('runs').objectStore('runs').openCursor();
       r.onerror = () => reject(r.error);
       r.onsuccess = () => {
@@ -126,7 +129,8 @@ export const DB = {
         const v = c.value, scored = v.total - v.na > 0, age = Math.floor((now - Date.parse(v.ts)) / 864e5);
         out.count++;
         if (scored) { out.scored++; out.sum += v.score; }
-        if (v.status === 'Failed') out.failed++;
+        if (v.fail > 0) out.failed++;
+        if (v.status !== statusOf(v.score)) out.stale++;
         if (age >= 0 && age < 14) {
           const w = age < 7 ? out.cur : out.prev, d = out.daily[age];
           w.n++; d.n++;
@@ -134,6 +138,22 @@ export const DB = {
         }
         c.continue();
       };
+    });
+  },
+
+  // Re-grades any run whose stored status disagrees with its score (e.g. written by an older cached copy of the app).
+  async healStatuses() {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction('runs', 'readwrite'); let n = 0;
+      const r = t.objectStore('runs').openCursor();
+      r.onerror = () => reject(r.error);
+      r.onsuccess = () => {
+        const c = r.result; if (!c) return;
+        if (c.value.status !== statusOf(c.value.score)) { c.update(Object.assign({}, c.value, { status: statusOf(c.value.score) })); n++; }
+        c.continue();
+      };
+      t.oncomplete = () => resolve(n); t.onerror = () => reject(t.error);
     });
   },
 
@@ -171,7 +191,7 @@ export const DB = {
         const pass = Math.max(0, total - fail - na);
         const ts = new Date(now - Math.random() * span).toISOString();
         batch.push({ id: 'run-stress-' + j, sopId: s.id, sopRev: s.rev, initials: ini[j % ini.length], ts, total, pass, fail, na,
-          score: pass + fail ? Math.round(pass / (pass + fail) * 100) : 100, status: fail ? 'Failed' : 'Passed',
+          score: pass + fail ? Math.round(pass / (pass + fail) * 100) : 100, status: statusOf(pass + fail ? Math.round(pass / (pass + fail) * 100) : 100),
           results: Array.from({ length: total }, (_, k) => ({ r: k < fail ? 'fail' : k < fail + na ? 'na' : 'pass', t: ts, n: '', p: null })), note: 'Synthetic load-test record' });
       }
       await this.commit({ puts: { runs: batch } });

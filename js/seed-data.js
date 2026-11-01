@@ -88,11 +88,11 @@ export const KAIZENS = [
 
 function mkRuns() {
   const names = ['AR', 'MS', 'JC', 'LT'];
-  const defs = [['sop-wwmig', 1, 30], ['sop-modbus', 0, 21], ['sop-loop', 1, 14], ['sop-estop', 0, 9], ['sop-modbus', 1, 4], ['sop-loop', 0, 2]];
+  const defs = [['sop-fatsat', 2, 40], ['sop-wwmig', 1, 30], ['sop-modbus', 0, 21], ['sop-loop', 1, 14], ['sop-estop', 0, 9], ['sop-modbus', 1, 4], ['sop-loop', 0, 2]];
   return defs.map((d, i) => {
     const sop = SOPS.find(s => s.id === d[0]), total = sop.steps.length, fail = d[1], ts = day(d[2]);
     return { id: 'run-seed-' + i, sopId: sop.id, sopRev: sop.rev, initials: names[i % 4], ts, total, pass: total - fail, fail, na: 0,
-      score: Math.round(((total - fail) / total) * 100), status: fail ? 'Failed' : 'Passed',
+      score: Math.round(((total - fail) / total) * 100), status: Math.round(((total - fail) / total) * 100) >= 100 ? 'Passed' : Math.round(((total - fail) / total) * 100) >= 75 ? 'Deviation' : 'Failed',
       results: sop.steps.map((_, k) => ({ r: k < fail ? 'fail' : 'pass', t: ts, n: k < fail ? 'Seed deviation note' : '', p: null })), note: 'Seed audit record' };
   });
 }

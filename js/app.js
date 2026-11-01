@@ -12,7 +12,9 @@ const $ = (s, r = document) => r.querySelector(s);
 const view = $('#view'), modal = $('#modal');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fdt = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '--';
-const scoreCls = n => n >= 90 ? 'ok' : n >= 70 ? 'warn' : 'bad';
+const scoreCls = n => n >= 100 ? 'ok' : n >= 75 ? 'warn' : 'bad';   // single run: 100 / 75-99 / below 75
+const kpiCls = n => n >= 90 ? 'ok' : n >= 75 ? 'warn' : 'bad';     // average across runs
+const scoreTone = n => n >= 100 ? 's-ok' : n >= 75 ? 's-warn' : 's-bad';
 const sopOf = id => st.sops.find(s => s.id === id);
 const svg = p => `<svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
 const ICON = {
@@ -39,6 +41,7 @@ async function load() {
   st.sops = await DB.all('sops'); st.sops.sort((a, b) => a.code.localeCompare(b.code));
   st.kaizens = await DB.all('kaizens');
   st.stats = await DB.runStats();
+  if (st.stats.stale) { await DB.healStatuses(); st.stats.stale = 0; }
   const lasts = await Promise.all(st.sops.map(s => DB.lastBySop(s.id)));
   st.last = {}; st.sops.forEach((s, i) => { st.last[s.id] = lasts[i]; });
   st.recent = (await DB.page('runs', { index: 'ts', limit: 7 })).items;
@@ -86,11 +89,20 @@ const STAGE_VAR = { Plan: '--c-blue', Do: '--c-amber', Check: '--c-purple', Act:
 const WASTE_BAR = { Defects: '--bar-red', Waiting: '--bar-amber', Motion: '--bar-amber', Overprocessing: '--bar-cyan' };
 const STAGE_BAR = { Plan: '--bar-blue', Do: '--bar-amber', Check: '--bar-purple', Act: '--bar-green' };
 const ARW_L = I('<path d="M19 12H5M11 6l-6 6 6 6"/>', 14), ARW_R = I('<path d="M5 12h14M13 6l6 6-6 6"/>', 14), EYE = I('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>');
-const runIcon = r => r.status === 'Passed' ? `<span class="ok" title="Passed">${ICO.check}</span>` : r.score >= 70 ? `<span class="warn" title="Passed with failed steps">${ICO.warn}</span>` : `<span class="bad" title="Failed">${ICO.x}</span>`;
-const ring = (p, size = 64) => {
+const stat = r => DB.statusOf(r.score);   // status is always derived from the score: 100 Passed, 75-99 Deviation, <75 Failed
+const runIcon = r => stat(r) === 'Passed' ? `<span class="st-ok" title="Passed">${ICO.check}</span>` : stat(r) === 'Deviation' ? `<span class="st-warn" title="Deviation: 75-99% adherence">${ICO.warn}</span>` : `<span class="st-bad" title="Failed: below 75% adherence">${ICO.x}</span>`;
+const TARGET = 95;
+const ring = (p, size = 64, kpi = false) => {
   const sw = 6, r = (size - sw) / 2 - 1, c = 2 * Math.PI * r, h = size / 2;
-  const col = p == null ? 'var(--border-strong)' : `var(--${p >= 90 ? 'ok' : p >= 70 ? 'warn' : 'bad'})`;
-  return `<div class="ring2${p === 100 ? ' glow' : ''}" style="width:${size}px;height:${size}px" role="img" aria-label="${p == null ? 'No runs yet' : p + ' percent adherence'}"><svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true"><circle cx="${h}" cy="${h}" r="${r}" fill="none" style="stroke:var(--track)" stroke-width="${sw}"/>${p == null || p <= 0 ? '' : `<circle cx="${h}" cy="${h}" r="${r}" fill="none" style="stroke:${col}" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${(c * p / 100).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${h} ${h})"/>`}</svg><span style="font-size:${size > 80 ? '1.35rem' : '.875rem'}">${p == null ? '--' : p + '%'}</span></div>`;
+  const col = p == null ? 'var(--border-strong)' : `var(--${(kpi ? kpiCls(p) : scoreCls(p))})`;
+  const track = `<circle cx="${h}" cy="${h}" r="${r}" fill="none" style="stroke:var(--track)" stroke-width="${sw}"/>`;
+  const arc = p == null || p <= 0 ? '' : `<circle cx="${h}" cy="${h}" r="${r}" fill="none" style="stroke:${col}" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${(c * Math.min(p, 100) / 100).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${h} ${h})"/>`;
+  if (kpi) {   // gauge only: the large number lives beside it; a tick marks the target
+    const a = (-90 + 360 * TARGET / 100) * Math.PI / 180, r1 = r - sw / 2 - 2, r2 = r + sw / 2 + 2;
+    const tick = `<line x1="${(h + r1 * Math.cos(a)).toFixed(1)}" y1="${(h + r1 * Math.sin(a)).toFixed(1)}" x2="${(h + r2 * Math.cos(a)).toFixed(1)}" y2="${(h + r2 * Math.sin(a)).toFixed(1)}" style="stroke:var(--text)" stroke-width="2" stroke-linecap="round"/>`;
+    return `<div class="ring2 gauge-ring${p === 100 ? ' glow' : ''}" style="width:${size}px;height:${size}px" role="img" aria-label="${p == null ? 'No runs yet' : p + ' percent adherence, target ' + TARGET + ' percent'}"><svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">${track}${arc}${tick}</svg><span style="color:${col}">${ICO.shield}</span></div>`;
+  }
+  return `<div class="ring2${p === 100 ? ' glow' : ''}" style="width:${size}px;height:${size}px" role="img" aria-label="${p == null ? 'No runs yet' : p + ' percent adherence'}"><svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">${track}${arc}</svg><span style="font-size:.875rem">${p == null ? '--' : p + '%'}</span></div>`;
 };
 const spark = (vals, color) => {
   const pts = vals.map((v, i) => v == null ? null : [i, v]).filter(Boolean);
@@ -118,13 +130,13 @@ function vDashboard() {
   const advSeries = daily.map(d => d.s ? Math.round(d.sum / d.s) : null), runSeries = daily.map(d => d.n);
   const newKz = st.kaizens.filter(k => now - Date.parse(k.created) < wk).length;
   const weekMins = st.kaizens.filter(k => (k.stage === 'Check' || k.stage === 'Act') && now - Date.parse(k.updated) < wk).reduce((a, k) => a + (+k.minutesSaved || 0), 0);
-  const tone = m.adherence == null ? 'var(--border-strong)' : `var(--${m.adherence >= 90 ? 'ok' : m.adherence >= 70 ? 'warn' : 'bad'})`;
+  const tone = m.adherence == null ? 'var(--border-strong)' : `var(--${kpiCls(m.adherence)})`;
   const wc = WASTES.map(w => [w, st.kaizens.filter(k => k.waste === w).length]), wmax = Math.max(1, ...wc.map(x => x[1]));
   const sc = STAGES.map(x => [x, st.kaizens.filter(k => k.stage === x).length]), smax = Math.max(1, ...sc.map(x => x[1]));
   const bar = (label, n, max, v) => `<div class="bar-row"><span>${label}</span><div class="bar"><i style="width:${n ? Math.max(n / max * 100, 4) : 0}%;background:var(${v})"></i></div><b>${n}</b></div>`;
   return `
   <section class="grid kpis" aria-label="Key metrics">
-    <article class="card kpi primary" style="--kc:${tone}"><div class="top"><div><div class="label">SOP Adherence Rate</div><div class="value ${m.adherence == null ? '' : scoreCls(m.adherence)}">${m.adherence == null ? '--' : m.adherence + '%'}</div></div>${ring(m.adherence, 88)}</div>
+    <article class="card kpi primary" style="--kc:${tone}"><div class="top"><div><div class="label">SOP Adherence Rate</div><div class="value ${m.adherence == null ? '' : kpiCls(m.adherence)}">${m.adherence == null ? '--' : m.adherence + '%'}</div></div><div class="gauge">${ring(m.adherence, 88, true)}<span class="gauge-cap">Target: ${TARGET}%</span></div></div>
       <div class="foot">${trend(dA, 'pts this week')}${spark(advSeries, tone)}</div></article>
     <article class="card kpi" style="--kc:var(--c-blue)"><div><div class="label">Audit Runs</div><div class="value">${s.count}</div><div class="hint">${s.failed} with a failed step</div></div>
       <div class="foot">${trend(s.cur.n || s.prev.n ? s.cur.n - s.prev.n : null, 'runs this week', 'No runs in 14 days')}${spark(runSeries, 'var(--c-blue)')}</div></article>
@@ -160,7 +172,7 @@ function vSops() {
       <div class="sop-head"><div><span class="badge ${catClass(s.category)}">${esc(s.category)}</span><h3 style="margin-top:var(--space-2)">${esc(s.title)}</h3><p class="muted">${esc(s.code)} · Rev ${esc(s.rev)} · ${s.steps.length} steps</p></div>${ring(lr ? lr.score : null)}</div>
       <p class="muted">${esc(s.summary)}</p>
       <p class="muted">${lr ? 'Last run ' + fdt(lr.ts) + ' by ' + esc(lr.initials) : 'Never executed'}</p>
-      <div class="row"><button class="btn" data-run="${esc(s.id)}">${ICO.play} Start Verification</button><button class="btn ghost" data-hist="${esc(s.id)}">${ICO.hist} History</button></div>
+      <div class="row sop-actions"><button class="btn" data-run="${esc(s.id)}">${ICO.play} Start Verification</button><button class="btn ghost" data-hist="${esc(s.id)}">${ICO.hist} History</button></div>
     </article>`;
   }).join('')}</section>` : empty(ICON.search, 'No matches', `Nothing matches "${st.q}".`, '<button class="btn ghost" data-act="clearq">Clear search</button>'));
 }
@@ -182,7 +194,7 @@ function vKaizen() {
     return `<div class="col" data-stage="${s}" role="region" aria-label="${s} column"><div class="colhead"><h2>${s}</h2><span class="count" aria-label="${items.length} items">${items.length}</span></div><p class="hint">${STAGE_HINT[s]}</p>
     ${items.map(k => `<article class="k-card"><button class="title" data-open="${esc(k.id)}">${esc(k.title)}</button>
       <div class="badges"><span class="badge ${k.priority}">${k.priority}</span><span class="badge w-${k.waste}">${esc(k.waste)}</span></div>
-      <div class="k-foot"><span class="muted">${esc(k.owner)}${+k.minutesSaved ? ' · saves ' + k.minutesSaved + ' min' : ''}</span><span class="chips">${i > 0 ? chip(k, -1) : ''}${i < 3 ? chip(k, 1) : ''}</span></div></article>`).join('') || '<p class="muted">Nothing here. Move a card in, or add a new Kaizen.</p>'}</div>`;
+      <p class="k-meta muted">${esc(k.owner)}${+k.minutesSaved ? ' · saves ' + k.minutesSaved + ' min' : ''}</p><div class="k-foot"><span class="chips">${i > 0 ? chip(k, -1) : ''}${i < 3 ? chip(k, 1) : ''}</span></div></article>`).join('') || '<p class="muted">Nothing here. Move a card in, or add a new Kaizen.</p>'}</div>`;
   }).join('')}</section>`;
 }
 
@@ -193,7 +205,7 @@ function auditPlan() {
   else if (f.status !== 'all') { index = 'status_ts'; range = b(f.status); }
   else if (f.sopId !== 'all') { index = 'sop_ts'; range = b(f.sopId); }
   const n = (f.initials ? 1 : 0) + (f.status !== 'all' ? 1 : 0) + (f.sopId !== 'all' ? 1 : 0);
-  const filter = n > 1 ? r => (!f.initials || r.initials === f.initials) && (f.status === 'all' || r.status === f.status) && (f.sopId === 'all' || r.sopId === f.sopId) : null;
+  const filter = n > 1 ? r => (!f.initials || r.initials === f.initials) && (f.status === 'all' || stat(r) === f.status) && (f.sopId === 'all' || r.sopId === f.sopId) : null;
   return { index, range, filter, n };
 }
 async function auditMore(reset) {
@@ -209,17 +221,17 @@ async function vAudit() {
   const f = st.audit;
   if (f.dirty) { await auditMore(true); f.events = (await DB.page('audit', { index: 'ts', limit: 12 })).items; f.dirty = false; }
   const rows = f.items.map(r => { const s = sopOf(r.sopId) || {}; const photos = (r.results || []).filter(x => x && x.p).length;
-    return `<tr><td data-l="Status"><span class="badge ${r.status}">${runIcon(r)} ${r.status}</span></td>
+    return `<tr><td data-l="Status"><span class="badge ${stat(r)}">${stat(r)}</span></td>
       <td data-l="SOP"><b>${esc(s.code || r.sopId)}</b><br><span class="muted">${esc(s.title || '')}${photos ? ' · ' + photos + ' photo' + (photos > 1 ? 's' : '') : ''}</span></td>
       <td data-l="Engineer">${esc(r.initials)}</td><td data-l="Date &amp; time">${fdt(r.ts)}</td>
-      <td data-l="Score"><span class="badge score s-${r.score >= 90 ? 'ok' : r.score >= 70 ? 'warn' : 'bad'}">${r.score}%</span></td>
+      <td data-l="Score"><span class="badge score ${scoreTone(r.score)}">${r.score}%</span></td>
       <td><button class="btn ghost small" data-detail="${esc(r.id)}" aria-label="View run ${esc(s.code || r.sopId)} ${fdt(r.ts)}">${EYE} View Run</button></td></tr>`; }).join('');
   return `
   <section class="card" aria-label="Audit runs">
     <div class="filters" role="search">
-      <div><label for="fInit">Engineer initials</label><input id="fInit" maxlength="5" value="${esc(f.initials)}" placeholder="e.g. AR" autocomplete="off" style="text-transform:uppercase"></div>
-      <div><label for="fStatus">Status</label><select id="fStatus">${['all', 'Passed', 'Failed'].map(v => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${v === 'all' ? 'All' : v}</option>`).join('')}</select></div>
-      <div><label for="fSop">SOP</label><select id="fSop"><option value="all">All SOPs</option>${st.sops.map(s => `<option value="${esc(s.id)}" ${f.sopId === s.id ? 'selected' : ''}>${esc(s.code)}</option>`).join('')}</select></div>
+      <div class="f-init"><label for="fInit" class="vh">Engineer initials</label><input id="fInit" maxlength="5" value="${esc(f.initials)}" placeholder="Engineer" autocomplete="off" style="text-transform:uppercase"></div>
+      <div class="f-status"><label for="fStatus" class="vh">Status</label><select id="fStatus">${['all', 'Passed', 'Deviation', 'Failed'].map(v => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${v === 'all' ? 'All statuses' : v}</option>`).join('')}</select></div>
+      <div class="f-sop"><label for="fSop" class="vh">SOP</label><select id="fSop"><option value="all">All SOPs</option>${st.sops.map(s => `<option value="${esc(s.id)}" ${f.sopId === s.id ? 'selected' : ''}>${esc(s.code)}</option>`).join('')}</select></div>
     </div>
     <p class="muted" aria-live="polite" style="margin-bottom:var(--space-3)">${f.total != null ? f.total + ' matching runs' : f.items.length + ' loaded'} · indexed query ${f.ms} ms</p>
     ${rows ? `<div class="tbl-wrap"><table class="tbl"><caption class="vh">SOP audit runs, newest first</caption><thead><tr><th scope="col">Status</th><th scope="col">SOP</th><th scope="col">Engineer</th><th scope="col">Date &amp; time</th><th scope="col">Score</th><th scope="col"><span class="vh">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>`
@@ -235,7 +247,7 @@ async function vStorage() {
   const [i, t, oc, ep] = await Promise.all([storageInfo(), DB.totals(), DB.outboxCounts(), DB.getMeta('syncEndpoint')]);
   const pct = i.pct < 0.1 ? '<0.1' : i.pct.toFixed(1);
   return `
-  <section class="grid cols-2">
+  <section class="grid storage-grid">
     <article class="card"><h2>Local storage telemetry</h2>
       ${i.supported ? `<div class="meter-head"><span class="meter-pct ${i.warn ? 'bad' : ''}">${pct}%</span><span class="muted">of ${fmt(i.quota)} quota used</span></div>
       <div class="segbar ${i.warn ? 'bad' : i.pct > 60 ? 'warn' : ''}" role="progressbar" aria-label="Storage used" aria-valuenow="${i.pct.toFixed(2)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.min(100, Math.max(i.pct, 2))}%"></i></div>
@@ -353,7 +365,8 @@ function runModal(sop) {
       return entry;
     });
     const run = { id: runId, sopId: sop.id, sopRev: sop.rev, initials: ini, ts: new Date().toISOString(), total: sop.steps.length, pass: c.p, fail: c.f, na: c.n,
-      score: c.p + c.f ? Math.round(c.p / (c.p + c.f) * 100) : 100, status: c.f > 0 ? 'Failed' : 'Passed', results, note: $('#note', modal).value.trim() };
+      score: c.p + c.f ? Math.round(c.p / (c.p + c.f) * 100) : 100, status: '', results, note: $('#note', modal).value.trim() };
+    run.status = DB.statusOf(run.score);
     try {
       await DB.commit({ puts: { runs: [run], evidence }, outbox: [{ type: 'sop-run', payload: { run, evidence } }], audit: [{ action: 'run.saved', ref: run.id, detail: `${sop.code} ${run.score}% ${run.status}`, actor: ini }] });
     } catch (err) { toast('Save failed: ' + err.message); return; }
@@ -384,7 +397,7 @@ async function runDetail(id) {
   const sop = sopOf(r.sopId), evs = await DB.evidenceFor(id), byId = Object.fromEntries(evs.map(e => [e.id, e]));
   const label = { pass: 'Pass', fail: 'Fail', na: 'N/A' };
   openModal(sop ? sop.title : r.sopId, `<p class="muted">${esc(sop ? sop.code : '')} Rev ${esc(r.sopRev || '')} · ${fdt(r.ts)} · Initials ${esc(r.initials)}</p>
-    <p style="margin-top:var(--space-2)"><span class="badge ${r.status}">${r.status}</span> <b class="${scoreCls(r.score)}">${r.score}%</b> <span class="muted">${r.pass} pass, ${r.fail} fail, ${r.na} N/A</span></p>
+    <p style="margin-top:var(--space-2)"><span class="badge ${stat(r)}">${stat(r)}</span> <b class="${scoreCls(r.score)}">${r.score}%</b> <span class="muted">${r.pass} pass, ${r.fail} fail, ${r.na} N/A</span></p>
     ${(r.results || []).map((x, i) => `<div class="step ${x.r === 'pass' ? 'pass' : x.r === 'fail' ? 'fail' : ''}"><p class="t">${i + 1}. ${esc(sop && sop.steps[i] ? sop.steps[i].text : 'Step ' + (i + 1))}</p>
       <p><b class="${x.r === 'pass' ? 'ok' : x.r === 'fail' ? 'bad' : ''}">${label[x.r] || x.r}</b> <span class="stamp">${fdt(x.t)}</span></p>
       ${x.n ? `<p class="muted">Note: ${esc(x.n)}</p>` : ''}${x.p && byId[x.p] ? `<img class="evi" src="${esc(byId[x.p].dataUrl)}" alt="Evidence photo for step ${i + 1}">` : ''}</div>`).join('')}
@@ -477,7 +490,7 @@ function bindStorage() {
     const evs = await DB.all('evidence'); const hasPhoto = new Set(evs.map(e => e.id));
     const rows = [['Run ID', 'Run Timestamp', 'SOP Code', 'SOP Title', 'SOP Rev', 'Initials', 'Status', 'Adherence %', 'Step #', 'Step', 'Result', 'Step Timestamp', 'Evidence Note', 'Photo Attached', 'Run Remarks']];
     runs.forEach(r => { const s = sopOf(r.sopId) || {};
-      (r.results && r.results.length ? r.results : [null]).forEach((x, i) => rows.push([r.id, r.ts, s.code, s.title, r.sopRev, r.initials, r.status, r.score, x ? i + 1 : '', x && s.steps && s.steps[i] ? s.steps[i].text : '', x ? x.r : '', x ? x.t : '', x ? x.n : '', x && x.p && hasPhoto.has(x.p) ? 'Yes' : 'No', i === 0 ? r.note : ''])); });
+      (r.results && r.results.length ? r.results : [null]).forEach((x, i) => rows.push([r.id, r.ts, s.code, s.title, r.sopRev, r.initials, stat(r), r.score, x ? i + 1 : '', x && s.steps && s.steps[i] ? s.steps[i].text : '', x ? x.r : '', x ? x.t : '', x ? x.n : '', x && x.p && hasPhoto.has(x.p) ? 'Yes' : 'No', i === 0 ? r.note : ''])); });
     download(`sop-audit-${stamp()}.csv`, '\ufeff' + csv(rows), 'text/csv'); await DB.commit({ audit: [{ action: 'export.csv', detail: 'SOP audit CSV, ' + runs.length + ' runs' }] }); toast('SOP audit CSV exported');
   };
   $('#expKz').onclick = () => {
@@ -517,10 +530,17 @@ addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#tour').hidden 
 /* ---------------- router, render, events ---------------- */
 const currentTab = () => { const t = (location.hash.match(/^#\/(\w+)/) || [])[1]; return TABS.includes(t) ? t : 'dashboard'; };
 let lastTab = null, renderId = 0, renderP = Promise.resolve();
+function syncTabs(tab) {
+  document.querySelectorAll('.tabs a').forEach(a => {
+    const on = a.dataset.tab === tab;
+    a.setAttribute('aria-selected', String(on));
+    if (on) { a.setAttribute('aria-current', 'page'); a.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); } else a.removeAttribute('aria-current');
+  });
+}
 
 async function render() {
   const id = ++renderId, tab = currentTab();
-  document.querySelectorAll('.tabs a').forEach(a => a.setAttribute('aria-selected', String(a.dataset.tab === tab)));
+  syncTabs(tab);
   if (tab !== lastTab) { view.setAttribute('aria-busy', 'true'); view.innerHTML = skeleton(tab); if (tab === 'audit') st.audit.dirty = true; }
   lastTab = tab;
   let html;
@@ -546,6 +566,7 @@ async function updateChip() {
   const chip = $('#netChip'), c = await DB.outboxCounts(), on = navigator.onLine;
   $('#netTxt').textContent = !on ? 'Offline' + (c.pending ? ` · ${c.pending} queued` : '') : c.pending ? `${c.pending} queued` : 'Online';
   chip.dataset.state = !on ? 'offline' : c.pending ? 'queued' : 'online';
+  chip.dataset.pending = c.pending ? '1' : '0';
   chip.title = !on ? 'Offline. Changes are saved locally and sync when you reconnect.' : c.pending ? 'Online. Queued changes are syncing in the background.' : 'Online. All changes are stored locally and nothing is waiting to sync.';
   try {
     const i = await storageInfo(), sc = $('#storeChip');
@@ -614,7 +635,9 @@ $('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme =
 $('#tourBtn').onclick = () => startTour(0);
 let savedTheme = null; try { savedTheme = localStorage.getItem('wkh-theme'); } catch (_) {}
 setTheme(savedTheme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
-addEventListener('hashchange', () => { st.q = ''; renderP = render(); view.focus(); });
+addEventListener('hashchange', () => { syncTabs(currentTab()); st.q = ''; renderP = render(); view.focus(); });
+$('.tabs').addEventListener('click', e => { const a = e.target.closest('a[data-tab]'); if (a) syncTabs(a.dataset.tab); });   // instant feedback, before the hash event
+addEventListener('pageshow', () => syncTabs(currentTab()));                                                          // back/forward cache restore
 
 (async function boot() {
   initPWA({ onToast: toast, onOutbox, onNet: updateChip });

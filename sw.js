@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'wkh-v2.2.0';
+const VERSION = 'wkh-v2.5.0';
 const STATIC = `${VERSION}-static`;
 const RUNTIME = `${VERSION}-runtime`;
 const DB_NAME = 'workflow-kaizen-hub';

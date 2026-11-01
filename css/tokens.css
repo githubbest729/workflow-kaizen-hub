@@ -11,7 +11,7 @@
 /* Dark: deep industrial slate (control room default) */
 :root,[data-theme="dark"]{
   color-scheme:dark;
-  --bg:#0B0F19;--surface:#111827;--surface-2:#1F2937;--border:#374151;--border-strong:#6B7280;--track:#1E293B;
+  --bg:#0B0F19;--surface:#111827;--surface-2:#1F2937;--border:rgba(255,255,255,.07);--border-strong:#6B7280;--track:#1E293B;
   --text:#F9FAFB;--text-dim:#9CA3AF;
   --accent:#0EA5E9;--accent-ink:#031A26;--border-focus:#0EA5E9;
   --c-red:#FCA5A5;--c-amber:#FBBF24;--c-orange:#FB923C;--c-cyan:#22D3EE;--c-blue:#60A5FA;--c-purple:#D8B4FE;--c-green:#34D399;
@@ -20,12 +20,22 @@
   --shadow:0 4px 6px -1px rgba(0,0,0,.4),0 2px 4px -2px rgba(0,0,0,.4);--glow:0 0 12px rgba(14,165,233,.15);
   --scrim:rgba(3,7,18,.72);--skel-a:#1F2937;--skel-b:#374151;
   --bar-red:#EF4444;--bar-amber:#F59E0B;--bar-cyan:#0EA5E9;--bar-blue:#3B82F6;--bar-purple:#8B5CF6;--bar-green:#10B981;
-  --groove:rgba(255,255,255,.06);--soft:rgba(255,255,255,.06);--shadow-hover:0 10px 24px -6px rgba(0,0,0,.6),0 0 0 1px rgba(14,165,233,.25);
+  --groove:rgba(255,255,255,.06);--soft:rgba(255,255,255,.06);
+  /* 2026 surface system: translucent edge, glass depth, inner top highlight */
+  --card-bg:linear-gradient(180deg,rgba(30,41,59,.6) 0%,rgba(15,23,42,.75) 100%);
+  --card-border:rgba(255,255,255,.07);--border-hi:rgba(255,255,255,.16);
+  --card-shadow:0 4px 20px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.08);
+  --blur:blur(12px);--col-bg:rgba(255,255,255,.03);
+  --glass:rgba(255,255,255,.05);--glass-border:rgba(255,255,255,.1);--hover-2:rgba(255,255,255,.09);
+  --bar-glass:rgba(17,24,39,.86);
+  --page-bg:radial-gradient(900px 480px at 85% -8%,rgba(14,165,233,.07),transparent 60%),radial-gradient(700px 420px at -5% 108%,rgba(139,92,246,.05),transparent 60%);
+  /* refined industrial cobalt primary */
+  --btn-grad:linear-gradient(180deg,#0284C7 0%,#0369A1 100%);--btn-shadow:0 1px 2px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.2);--shadow-hover:0 10px 24px -6px rgba(0,0,0,.6),0 0 0 1px rgba(14,165,233,.25);
 }
 /* Light: field inspection */
 [data-theme="light"]{
   color-scheme:light;
-  --bg:#F3F6FB;--surface:#FFFFFF;--surface-2:#E8EEF7;--border:#C3CDDD;--border-strong:#66789A;--track:#D5DEEB;
+  --bg:#F3F6FB;--surface:#FFFFFF;--surface-2:#E8EEF7;--border:rgba(15,27,45,.12);--border-strong:#66789A;--track:#D5DEEB;
   --text:#0F1B2D;--text-dim:#44546E;
   --accent:#0369A1;--accent-ink:#FFFFFF;--border-focus:#0369A1;
   --c-red:#991B1B;--c-amber:#92400E;--c-orange:#9A3412;--c-cyan:#0B6179;--c-blue:#1D4ED8;--c-purple:#6B21A8;--c-green:#065F46;
@@ -33,8 +43,16 @@
   --hover:rgba(15,27,45,.06);--util-bg:rgba(15,27,45,.04);
   --shadow:0 4px 14px rgba(15,27,45,.15);--glow:0 0 12px rgba(3,105,161,.15);
   --scrim:rgba(15,27,45,.5);--skel-a:#E8EEF7;--skel-b:#D3DDEC;
-  --bar-red:#DC2626;--bar-amber:#D97706;--bar-cyan:#0284C7;--bar-blue:#2563EB;--bar-purple:#7C3AED;--bar-green:#059669;
-  --groove:rgba(15,27,45,.08);--soft:rgba(15,27,45,.06);--shadow-hover:0 10px 24px -8px rgba(15,27,45,.28),0 0 0 1px rgba(3,105,161,.3);
+  --bar-red:#DC2626;--bar-amber:#B45309;--bar-cyan:#0284C7;--bar-blue:#2563EB;--bar-purple:#7C3AED;--bar-green:#059669;
+  --groove:rgba(15,27,45,.08);--soft:rgba(15,27,45,.06);
+  --card-bg:linear-gradient(180deg,#FFFFFF 0%,#F8FAFD 100%);
+  --card-border:rgba(15,27,45,.10);--border-hi:rgba(15,27,45,.24);
+  --card-shadow:0 4px 16px rgba(15,27,45,.08),inset 0 1px 0 rgba(255,255,255,.9);
+  --blur:none;--col-bg:rgba(15,27,45,.035);
+  --glass:rgba(15,27,45,.04);--glass-border:rgba(15,27,45,.14);--hover-2:rgba(15,27,45,.08);
+  --bar-glass:rgba(255,255,255,.9);
+  --page-bg:radial-gradient(900px 480px at 85% -8%,rgba(3,105,161,.06),transparent 60%);
+  --btn-grad:linear-gradient(180deg,#0284C7 0%,#0369A1 100%);--btn-shadow:0 1px 2px rgba(15,27,45,.35),inset 0 1px 0 rgba(255,255,255,.2);--shadow-hover:0 10px 24px -8px rgba(15,27,45,.28),0 0 0 1px rgba(3,105,161,.3);
 }
 /* Semantic status aliases (resolve per theme) */
 :root{--ok:var(--c-green);--bad:var(--c-red);--warn:var(--c-amber);--info:var(--c-blue)}
