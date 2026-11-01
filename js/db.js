@@ -114,16 +114,22 @@ export const DB = {
   async lastBySop(sopId) { const r = await this.page('runs', { index: 'sop_ts', range: rng(sopId, ''), limit: 1 }); return r.items[0] || null; },
 
   async runStats() {
-    const db = await open();
+    const db = await open(), now = Date.now();
     return new Promise((resolve, reject) => {
-      const out = { count: 0, scored: 0, sum: 0, failed: 0 };
+      const out = { count: 0, scored: 0, sum: 0, failed: 0, cur: { n: 0, s: 0, sum: 0 }, prev: { n: 0, s: 0, sum: 0 }, daily: Array.from({ length: 14 }, () => ({ n: 0, s: 0, sum: 0 })) };
       const r = db.transaction('runs').objectStore('runs').openCursor();
       r.onerror = () => reject(r.error);
       r.onsuccess = () => {
         const c = r.result; if (!c) return resolve(out);
-        const v = c.value; out.count++;
-        if (v.total - v.na > 0) { out.scored++; out.sum += v.score; }
+        const v = c.value, scored = v.total - v.na > 0, age = Math.floor((now - Date.parse(v.ts)) / 864e5);
+        out.count++;
+        if (scored) { out.scored++; out.sum += v.score; }
         if (v.status === 'Failed') out.failed++;
+        if (age >= 0 && age < 14) {
+          const w = age < 7 ? out.cur : out.prev, d = out.daily[age];
+          w.n++; d.n++;
+          if (scored) { w.s++; w.sum += v.score; d.s++; d.sum += v.score; }
+        }
         c.continue();
       };
     });
