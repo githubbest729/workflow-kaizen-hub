@@ -83,6 +83,9 @@ const catClass = c => { c = String(c || '').toLowerCase();
     : /telemetry|rtu|fat|sat/.test(c) ? 'c-cyan' : /wonderware|hmi|scada/.test(c) ? 'c-purple' : ''; };
 const WASTE_VAR = { Defects: '--c-red', Waiting: '--c-amber', Motion: '--c-orange', Overprocessing: '--c-cyan' };
 const STAGE_VAR = { Plan: '--c-blue', Do: '--c-amber', Check: '--c-purple', Act: '--c-green' };
+const WASTE_BAR = { Defects: '--bar-red', Waiting: '--bar-amber', Motion: '--bar-amber', Overprocessing: '--bar-cyan' };
+const STAGE_BAR = { Plan: '--bar-blue', Do: '--bar-amber', Check: '--bar-purple', Act: '--bar-green' };
+const ARW_L = I('<path d="M19 12H5M11 6l-6 6 6 6"/>', 14), ARW_R = I('<path d="M5 12h14M13 6l6 6-6 6"/>', 14), EYE = I('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>');
 const runIcon = r => r.status === 'Passed' ? `<span class="ok" title="Passed">${ICO.check}</span>` : r.score >= 70 ? `<span class="warn" title="Passed with failed steps">${ICO.warn}</span>` : `<span class="bad" title="Failed">${ICO.x}</span>`;
 const ring = (p, size = 64) => {
   const sw = 6, r = (size - sw) / 2 - 1, c = 2 * Math.PI * r, h = size / 2;
@@ -122,21 +125,21 @@ function vDashboard() {
   return `
   <section class="grid kpis" aria-label="Key metrics">
     <article class="card kpi primary" style="--kc:${tone}"><div class="top"><div><div class="label">SOP Adherence Rate</div><div class="value ${m.adherence == null ? '' : scoreCls(m.adherence)}">${m.adherence == null ? '--' : m.adherence + '%'}</div></div>${ring(m.adherence, 88)}</div>
-      <div class="foot">${trend(dA, 'pts vs prior 7 days')}${spark(advSeries, tone)}</div></article>
+      <div class="foot">${trend(dA, 'pts this week')}${spark(advSeries, tone)}</div></article>
     <article class="card kpi" style="--kc:var(--c-blue)"><div><div class="label">Audit Runs</div><div class="value">${s.count}</div><div class="hint">${s.failed} with a failed step</div></div>
-      <div class="foot">${trend(s.cur.n || s.prev.n ? s.cur.n - s.prev.n : null, 'runs vs prior 7 days', 'No runs in 14 days')}${spark(runSeries, 'var(--c-blue)')}</div></article>
+      <div class="foot">${trend(s.cur.n || s.prev.n ? s.cur.n - s.prev.n : null, 'runs this week', 'No runs in 14 days')}${spark(runSeries, 'var(--c-blue)')}</div></article>
     <article class="card kpi" style="--kc:var(--c-purple)"><div><div class="label">Active Kaizens</div><div class="value">${m.active}</div><div class="hint">Not yet standardised</div></div>
       <div class="foot">${trend(newKz, 'new this week')}</div></article>
     <article class="card kpi" style="--kc:var(--c-cyan)"><div><div class="label">Cycle Time Saved</div><div class="value">${(m.mins / 60).toFixed(1)}<small> h</small></div><div class="hint">Verified in Check or Act</div></div>
-      <div class="foot">${trend(Math.round(weekMins / 6) / 10, 'h from items updated this week')}</div></article>
+      <div class="foot">${trend(Math.round(weekMins / 6) / 10, 'h this week')}</div></article>
     <article class="card kpi" style="--kc:var(--c-green)"><div><div class="label">Incident Reduction</div><div class="value ok">${m.inc}%</div><div class="hint">Mean of verified improvements</div></div>
       <div class="foot"><span class="trend flat">${ICO.shield} Across ${st.kaizens.filter(k => +k.incidentReduction > 0 && (k.stage === 'Check' || k.stage === 'Act')).length} Kaizens</span></div></article>
   </section>
   <section class="grid cols-2" style="margin-top:var(--space-4)">
     <article class="card"><h2>Lean waste distribution</h2>
-      ${wc.map(([w, n]) => bar(w, n, wmax, WASTE_VAR[w])).join('')}
+      ${wc.map(([w, n]) => bar(w, n, wmax, WASTE_BAR[w])).join('')}
       <h2 style="margin-top:var(--space-5)">PDCA pipeline</h2>
-      ${sc.map(([x, n]) => bar(x, n, smax, STAGE_VAR[x])).join('')}
+      ${sc.map(([x, n]) => bar(x, n, smax, STAGE_BAR[x])).join('')}
     </article>
     <article class="card"><h2>Recent SOP audit runs</h2>
       ${st.recent.length ? `<ul class="tiles">${st.recent.map(r => `<li><button class="run-tile" data-detail="${esc(r.id)}"><span class="rt-ico">${runIcon(r)}</span><span class="rt-main">${esc(sopTitle(r.sopId))}<br><span class="muted">${esc(r.initials)} · ${fdt(r.ts)}</span></span><b class="${scoreCls(r.score)}">${r.score}%</b></button></li>`).join('')}</ul>`
@@ -175,7 +178,7 @@ function vKaizen() {
   </div>
   <section class="board">${STAGES.map((s, i) => {
     const items = list.filter(k => k.stage === s);
-    const chip = (k, d) => { const t = STAGES[i + d]; return `<button class="chip-btn ${d < 0 ? 'back' : ''}" style="--tc:var(${STAGE_VAR[t]})" data-mv="${esc(k.id)}" data-d="${d}" aria-label="Move ${d < 0 ? 'back' : 'forward'} to ${t}">${d < 0 ? '&larr; ' + t : t + ' &rarr;'}</button>`; };
+    const chip = (k, d) => { const t = STAGES[i + d]; return `<button class="chip-btn ${d < 0 ? 'back' : ''}" style="--tc:var(${STAGE_VAR[t]})" data-mv="${esc(k.id)}" data-d="${d}" aria-label="Move ${d < 0 ? 'back' : 'forward'} to ${t}">${d < 0 ? ARW_L + ' ' + t : t + ' ' + ARW_R}</button>`; };
     return `<div class="col" data-stage="${s}" role="region" aria-label="${s} column"><div class="colhead"><h2>${s}</h2><span class="count" aria-label="${items.length} items">${items.length}</span></div><p class="hint">${STAGE_HINT[s]}</p>
     ${items.map(k => `<article class="k-card"><button class="title" data-open="${esc(k.id)}">${esc(k.title)}</button>
       <div class="badges"><span class="badge ${k.priority}">${k.priority}</span><span class="badge w-${k.waste}">${esc(k.waste)}</span></div>
@@ -209,8 +212,8 @@ async function vAudit() {
     return `<tr><td data-l="Status"><span class="badge ${r.status}">${runIcon(r)} ${r.status}</span></td>
       <td data-l="SOP"><b>${esc(s.code || r.sopId)}</b><br><span class="muted">${esc(s.title || '')}${photos ? ' · ' + photos + ' photo' + (photos > 1 ? 's' : '') : ''}</span></td>
       <td data-l="Engineer">${esc(r.initials)}</td><td data-l="Date &amp; time">${fdt(r.ts)}</td>
-      <td data-l="Score"><div class="scorebar"><div class="bar"><i style="width:${r.score}%;background:var(--${r.score >= 90 ? 'ok' : r.score >= 70 ? 'warn' : 'bad'})"></i></div><b class="${scoreCls(r.score)}">${r.score}%</b></div></td>
-      <td><button class="btn ghost small" data-detail="${esc(r.id)}" aria-label="View run ${esc(s.code || r.sopId)} ${fdt(r.ts)}">View</button></td></tr>`; }).join('');
+      <td data-l="Score"><span class="badge score s-${r.score >= 90 ? 'ok' : r.score >= 70 ? 'warn' : 'bad'}">${r.score}%</span></td>
+      <td><button class="btn ghost small" data-detail="${esc(r.id)}" aria-label="View run ${esc(s.code || r.sopId)} ${fdt(r.ts)}">${EYE} View Run</button></td></tr>`; }).join('');
   return `
   <section class="card" aria-label="Audit runs">
     <div class="filters" role="search">
@@ -234,8 +237,9 @@ async function vStorage() {
   return `
   <section class="grid cols-2">
     <article class="card"><h2>Local storage telemetry</h2>
-      ${i.supported ? `<div class="healthbar" role="progressbar" aria-label="Storage used" aria-valuenow="${i.pct.toFixed(2)}" aria-valuemin="0" aria-valuemax="100"><i class="used ${i.warn ? 'bad' : i.pct > 60 ? 'warn' : ''}" style="width:${Math.min(100, Math.max(i.pct, 0.5))}%"></i><i class="rest"></i></div>
-      <div class="hb-legend"><span><i class="sw"></i>Used ${fmt(i.usage)} <span class="pct">${pct}%</span></span><span><i class="sw rest"></i>Remaining ${fmt(Math.max(0, i.quota - i.usage))}</span></div>
+      ${i.supported ? `<div class="meter-head"><span class="meter-pct ${i.warn ? 'bad' : ''}">${pct}%</span><span class="muted">of ${fmt(i.quota)} quota used</span></div>
+      <div class="segbar ${i.warn ? 'bad' : i.pct > 60 ? 'warn' : ''}" role="progressbar" aria-label="Storage used" aria-valuenow="${i.pct.toFixed(2)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.min(100, Math.max(i.pct, 2))}%"></i></div>
+      <div class="hb-legend"><span><i class="sw"></i>Used ${fmt(i.usage)}</span><span><i class="sw rest"></i>Remaining ${fmt(Math.max(0, i.quota - i.usage))}</span></div>
       <ul class="list" style="margin-top:var(--space-3)">
         <li><span>Persistent storage</span><b class="${i.persisted ? 'ok' : 'warn'}">${i.persisted ? 'Granted' : 'Not granted'}</b></li>
         <li><span>SOPs / Kaizens / Runs</span><b>${t.sops} / ${t.kaizens} / ${t.runs}</b></li>
@@ -250,9 +254,9 @@ async function vStorage() {
       <p class="muted">Data stays on this device. Export a backup to move it to another workstation or keep a long-term archive.</p>
       <div class="row" style="margin-top:var(--space-3)"><button class="btn" id="expJson">${ICO.down} Full backup (JSON)</button></div>
       <div class="row" style="margin-top:var(--space-2)">
-        <button class="btn ghost" id="impJson">${ICO.up} Import backup</button>
-        <button class="btn ghost" id="expSop">${ICO.sheet} SOP audit (CSV)</button>
-        <button class="btn ghost" id="expKz">${ICO.sheet} Kaizen review (CSV)</button>
+        <button class="btn soft" id="impJson">${ICO.up} Import backup</button>
+        <button class="btn soft" id="expSop">${ICO.sheet} SOP audit (CSV)</button>
+        <button class="btn soft" id="expKz">${ICO.sheet} Kaizen review (CSV)</button>
       </div>
       <input type="file" id="file" accept="application/json,.json" class="vh" tabindex="-1" aria-hidden="true">
       <label style="display:flex;gap:var(--space-2);align-items:center"><input type="checkbox" id="replace"> Replace existing data on import (otherwise merge)</label>
@@ -261,7 +265,7 @@ async function vStorage() {
       <p class="muted">Every SOP run and Kaizen change is queued in an IndexedDB outbox and delivered by Background Sync when the device reconnects. Set an HTTPS endpoint that accepts JSON POSTs (CORS enabled).</p>
       <ul class="list" style="margin-top:var(--space-2)"><li><span>Pending</span><b>${oc.pending}</b></li><li><span>Rejected by server</span><b class="${oc.rejected ? 'bad' : ''}">${oc.rejected}</b></li></ul>
       <label for="ep">Sync endpoint URL</label><input id="ep" type="url" inputmode="url" placeholder="https://example.org/api/kaizen-sync" value="${esc(ep || '')}">
-      <div class="row" style="margin-top:var(--space-3)"><button class="btn" data-act="syncnow">${ICO.sync} Sync now</button><button class="btn ghost" data-act="saveep">Save endpoint</button>${oc.rejected ? '<button class="btn ghost" data-act="requeue">Retry rejected</button>' : ''}</div>
+      <div class="row" style="margin-top:var(--space-3)"><button class="btn" data-act="syncnow">${ICO.sync} Sync now</button><button class="btn soft" data-act="saveep">Save endpoint</button>${oc.rejected ? '<button class="btn ghost" data-act="requeue">Retry rejected</button>' : ''}</div>
     </article>
     <article class="card"><h2>Scale test &amp; maintenance</h2>
       <p class="muted">Generate 3,000 synthetic audit runs spread over 3 years to confirm the indexed queries stay fast.</p>

@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'wkh-v2.1.0';
+const VERSION = 'wkh-v2.2.0';
 const STATIC = `${VERSION}-static`;
 const RUNTIME = `${VERSION}-runtime`;
 const DB_NAME = 'workflow-kaizen-hub';
@@ -93,7 +93,7 @@ async function flushOutbox() {
   try {
     const ep = await idb(db.transaction('meta').objectStore('meta').get('syncEndpoint'));
     const all = await idb(db.transaction('outbox').objectStore('outbox').getAll());
-    const items = all.filter(i => i.status === 'pending').sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    const items = all.filter(i => i.status === 'pending').sort((a, b) => ((a.seq || 0) - (b.seq || 0)) || (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
     if (!items.length) return report(0, 0);
     if (!ep || !ep.value) return report(0, items.length, 'no-endpoint');
     let sent = 0;
@@ -103,7 +103,7 @@ async function flushOutbox() {
         res = await fetch(ep.value, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Idempotency-Key': item.id },
-          body: JSON.stringify({ id: item.id, type: item.type, ts: item.ts, payload: item.payload })
+          body: JSON.stringify({ id: item.id, seq: item.seq, type: item.type, ts: item.ts, payload: item.payload })
         });
       } catch (err) {
         await mark(db, item, { lastError: String(err) });

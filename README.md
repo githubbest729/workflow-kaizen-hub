@@ -44,7 +44,7 @@ Set the endpoint under Data & Storage > Offline sync queue. Without an endpoint,
 
 Request body:
 ```json
-{ "id": "uuid", "type": "sop-run | kaizen-upsert | kaizen-delete | sop-upsert", "ts": "ISO-8601", "payload": { } }
+{ "id": "uuid", "seq": 1790000000000123, "type": "sop-run | kaizen-upsert | kaizen-delete | sop-upsert", "ts": "ISO-8601", "payload": { } }
 ```
 The endpoint must allow CORS for the app origin (`Access-Control-Allow-Origin`, `Access-Control-Allow-Headers: Content-Type, Idempotency-Key`).
 

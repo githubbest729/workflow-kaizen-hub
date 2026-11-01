@@ -55,7 +55,9 @@ function migrateRun(v) {
   return v;
 }
 
-const mkOutbox = (type, payload) => ({ id: uid(), type, payload, ts: new Date().toISOString(), status: 'pending', attempts: 0 });
+let seqN = 0;
+const nextSeq = () => Date.now() * 1000 + (seqN = (seqN + 1) % 1000); // monotonic: keeps FIFO order for items created in the same millisecond
+const mkOutbox = (type, payload) => ({ id: uid(), seq: nextSeq(), type, payload, ts: new Date().toISOString(), status: 'pending', attempts: 0 });
 const mkAudit = a => ({ id: uid(), ts: new Date().toISOString(), action: a.action, ref: a.ref || '', detail: a.detail || '', actor: a.actor || '' });
 
 export const DB = {
